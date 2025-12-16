@@ -66,7 +66,7 @@ def get_yahoo_multi_rank_tickers():
 
 
 # ==============================================================================
-# 【策略函式】(保持不變)
+# 【策略函式】
 # ==============================================================================
 
 # 策略 1: 盤整突破 (日線)
@@ -138,32 +138,41 @@ def check_strategy_5m_breakout(ticker):
         return None
 
 
-# 策略 3: 高檔飛舞回測不破5日線
+# 策略 3: 高檔飛舞 (只篩選前日爆量黑K)
 def check_strategy_high_level_dance(ticker):
     try:
+        # 下載近 1 個月資料
         df = yf.download(ticker, period="1mo", interval="1d", progress=False)
+
         if len(df) < 21: return None
 
-        df['MA5'] = trend.sma_indicator(close=df['Close'], window=5, fillna=False)
-        if df['MA5'].isnull().iloc[-1]: return None
+        # --- 提取昨日數據 ---
+        yesterday = df.iloc[-1]
 
-        today_close = df['Close'].iloc[-1]
-        yesterday_close = df['Close'].iloc[-2]
-        today_ma5 = df['MA5'].iloc[-1]
+        # 計算 20 日平均量 (使用昨日之前的 20 天數據)
+        df_vol_20d = yf.download(ticker, period="1mo", interval="1d", progress=False)['Volume']
+        if len(df_vol_20d) < 21: return None
+        avg_vol_20d = df_vol_20d.iloc[:-1].tail(20).mean()
 
-        price_change_20d = (today_close / df['Close'].iloc[-20]) - 1
+        # --- 條件 1: 高檔確認 (近 20 日漲幅 > 10%) ---
+        close_20d_ago = yf.download(ticker, period="1mo", interval="1d", progress=False)['Close'].iloc[-21]
+        price_change_20d = (yesterday['Close'] / close_20d_ago) - 1
         is_high_level = price_change_20d > 0.10
 
-        is_pullback = today_close < yesterday_close
-        is_above_ma5 = today_close > today_ma5
+        if not is_high_level: return None
 
-        if is_high_level and is_pullback and is_above_ma5:
+        # --- 條件 2: 前日條件 (爆量倒貨黑 K) ---
+        is_yesterday_black_k = yesterday['Close'] < yesterday['Open']
+        is_yesterday_high_vol = yesterday['Volume'] > (avg_vol_20d * 2)
+
+        if is_yesterday_black_k and is_yesterday_high_vol:
             return {
                 "股票": ticker,
-                "現價": round(today_close, 2),
-                "MA5": round(today_ma5, 2),
+                "昨日收盤": round(yesterday['Close'], 2),
+                "昨日開盤": round(yesterday['Open'], 2),
+                "昨日量增": f"{round(yesterday['Volume'] / avg_vol_20d, 1)}倍",
                 "20日漲幅": f"{round(price_change_20d * 100, 1)}%",
-                "訊號": "高檔飛舞"
+                "訊號": "高檔飛舞 (前日爆量黑K)"
             }
         return None
 
@@ -201,19 +210,17 @@ if source_option == "手動輸入代號":
     st.sidebar.info(f"目前清單數量: {len(tickers)} 檔")
 
 else:  # 自動抓取 Yahoo 熱門榜單模式
-    # 移除 scan_limit 滑桿，執行全量掃描
 
     if st.sidebar.button("🚀 立即抓取並準備全量掃描"):
         with st.spinner("正在連線 Yahoo 股市抓取資料..."):
-            # 執行無數量限制的抓取
-            scraped_tickers = get_yahoo_multi_rank_tickers()
+            scraped_tickers = get_yahoo_multi_rank_tickers()  # 無數量限制的抓取
         st.session_state['yahoo_tickers'] = scraped_tickers
         st.success(f"成功抓到 {len(scraped_tickers)} 檔熱門股！")
 
     # 讀取抓到的清單
     tickers = st.session_state.get('yahoo_tickers', [])
     if tickers:
-        # **這裡執行全量掃描：tickers 保持不變**
+        # 全量掃描：tickers 保持不變，沒有 scan_limit 滑桿
         st.sidebar.markdown(f"**💡 即將掃描清單：** **{len(tickers)}** 檔")
     else:
         st.sidebar.warning("請點擊按鈕抓取股票")
