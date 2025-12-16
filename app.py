@@ -8,66 +8,68 @@ import re
 import ta.trend as trend
 import time
 
-# ==============================================================================
-# 【關鍵 SSL 繞過代碼】解決連線臺灣官方網站的憑證驗證失敗問題 (必須存在)
-# ==============================================================================
-import ssl
-
-try:
-    _create_unverified_https_context = ssl._create_unverified_context
-except AttributeError:
-    # 針對舊版 Python 的處理
-    pass
-else:
-    ssl._create_default_https_context = _create_unverified_https_context
-# ==============================================================================
-
-
 # --- 頁面設定 ---
-st.set_page_config(page_title="股票策略篩選器 (TWSE/OTC 官方清單)", layout="wide")
-st.title("📈 股票策略篩選器 (TWSE/OTC 官方清單來源)")
+st.set_page_config(page_title="股票策略篩選器 (Yahoo 多榜單來源)", layout="wide")
+st.title("📈 股票策略篩選器 (Yahoo 熱門榜單整合)")
 st.markdown("---")
 
 
 # ==============================================================================
-# 【清單抓取功能】抓取 TWSE/OTC 官方網址 (使用您指定的網址)
+# 【清單抓取功能】抓取 Yahoo 股市多個熱門排行榜的股票
 # ==============================================================================
-@st.cache_data(ttl=86400)  # 設定快取，每天只更新一次
-def get_all_tw_tickers():
+@st.cache_data(ttl=300)  # 設定快取，5分鐘內更新一次
+def get_yahoo_multi_rank_tickers(limit=100):
     """
-    從證交所/櫃買中心爬取所有台灣上市櫃股票代號清單 (必須依賴 lxml 和 SSL 繞過)
+    爬取 Yahoo 股市多個熱門排行榜的股票代號，並合併去重。
     """
-    st.info("正在連線 TWSE/OTC 網站抓取所有股票代號清單... (請耐心等候)")
-    all_tickers = []
+    st.info("正在連線 Yahoo 股市，抓取指定的多個熱門排行榜股票清單...")
+    tickers = set()  # 使用 set 避免重複
 
-    # 爬取上市公司清單 (TSE) - 使用您指定的網址
+    # 整合所有您要求的排行榜網址：
+    rank_urls = [
+        # 外資買超/賣超
+        "https://tw.stock.yahoo.com/rank/foreign_buy_sell?exchange=TAI",  # 外資當日買超/賣超 (上市)
+        "https://tw.stock.yahoo.com/rank/foreign_buy_sell?exchange=TWO",  # 外資當日買超/賣超 (上櫃)
+
+        # 漲幅排行
+        "https://tw.stock.yahoo.com/rank/change-up?exchange=TAI",  # 台股漲幅排行 (上市)
+        "https://tw.stock.yahoo.com/rank/change-up?exchange=TWO",  # 台股漲幅排行 (上櫃)
+
+        # 成交量排行
+        "https://tw.stock.yahoo.com/rank/volume?exchange=TAI",  # 台股成交量排行 (上市)
+        "https://tw.stock.yahoo.com/rank/volume?exchange=TWO"  # 台股成交量排行 (上櫃)
+    ]
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    }
+
     try:
-        url_tse = 'https://isin.twse.com.tw/isin/C_public.jsp?strMode=2'
-        df_tse = pd.read_html(url_tse)[0]
-        df_tse = df_tse.iloc[1:]
+        for url in rank_urls:
+            response = requests.get(url, headers=headers)
+            soup = BeautifulSoup(response.text, "html.parser")
 
-        for item in df_tse[0]:
-            parts = item.split()
-            if len(parts) > 0 and parts[0].isdigit() and len(parts[0]) == 4:
-                all_tickers.append(f"{parts[0]}.TW")
+            # 尋找所有符合股票連結格式的標籤
+            links = soup.find_all('a', href=re.compile(r'/quote/\d{4}\.(TW|TWO)'))
+
+            for link in links:
+                href = link.get('href')
+                # 提取代號並統一為 .TW 格式
+                match = re.search(r'(\d{4}\.(TW|TWO))', href)
+                if match:
+                    ticker = match.group(1).replace('.TWO', '.TW')
+                    tickers.add(ticker)  # 加入 set 中，自動去重
+
+            # 如果抓到的股票數量已經足夠，則提前退出
+            if len(tickers) >= limit and len(rank_urls) > 1:
+                break
+
+        # 轉換成列表並限制最終數量
+        return list(tickers)[:limit]
+
     except Exception as e:
-        st.error(f"爬取上市公司清單失敗: {e}")
-
-    # 爬取上櫃公司清單 (OTC)
-    try:
-        url_otc = 'https://isin.twse.com.tw/isin/C_public.jsp?strMode=4'
-        df_otc = pd.read_html(url_otc)[0]
-        df_otc = df_otc.iloc[1:]
-
-        for item in df_otc[0]:
-            parts = item.split()
-            if len(parts) > 0 and parts[0].isdigit() and len(parts[0]) == 4:
-                all_tickers.append(f"{parts[0]}.TW")
-    except Exception as e:
-        st.error(f"爬取上櫃公司清單失敗: {e}")
-
-    unique_tickers = list(set(all_tickers))
-    return unique_tickers
+        st.error(f"爬取 Yahoo 排行榜失敗: {e}")
+        return []
 
 
 # ==============================================================================
@@ -76,6 +78,7 @@ def get_all_tw_tickers():
 # ==============================================================================
 # 【策略函式】(保持不變)
 # ==============================================================================
+
 # 策略 1: 盤整突破 (日線)
 def check_strategy_consolidation(ticker):
     try:
@@ -195,11 +198,12 @@ st.sidebar.header("🔍 股票來源設定")
 
 source_option = st.sidebar.radio(
     "請選擇股票來源：",
-    ["手動輸入代號", "自動抓取 TWSE/OTC 官方清單"]
+    ["手動輸入代號", "自動抓取 Yahoo 熱門榜單"]  # <-- 統一使用 Yahoo 榜單
 )
 
-if 'all_tickers' not in st.session_state:
-    st.session_state['all_tickers'] = []
+# 初始化 session state
+if 'yahoo_tickers' not in st.session_state:
+    st.session_state['yahoo_tickers'] = []
 
 if source_option == "手動輸入代號":
     default_tickers = "2330.TW, 2317.TW, 2454.TW, 3231.TW, 2603.TW"
@@ -207,25 +211,22 @@ if source_option == "手動輸入代號":
     tickers = [t.strip().upper() for t in ticker_input.split(",") if t.strip()]
     st.sidebar.info(f"目前清單數量: {len(tickers)} 檔")
 
-else:  # 自動抓取 TWSE/OTC 官方清單模式
-    if st.sidebar.button("🚀 取得所有股票清單"):
-        with st.spinner("正在抓取股票清單中..."):
-            all_list = get_all_tw_tickers()
-        st.session_state['all_tickers'] = all_list
-        st.success(f"成功抓到 {len(all_list)} 檔股票！")
+else:  # 自動抓取 Yahoo 熱門榜單模式
+    scan_limit = st.sidebar.slider("要掃描前幾名？ (抓取越多，掃描越慢)", 10, 200, 50)
 
-    tickers = st.session_state.get('all_tickers', [])
+    if st.sidebar.button("🚀 立即抓取最新熱門榜單清單"):
+        with st.spinner("正在連線 Yahoo 股市抓取資料..."):
+            scraped_tickers = get_yahoo_multi_rank_tickers(limit=scan_limit)  # <-- 呼叫多榜單函式
+        st.session_state['yahoo_tickers'] = scraped_tickers
+        st.success(f"成功抓到 {len(scraped_tickers)} 檔熱門股！")
+
+    # 讀取抓到的清單
+    tickers = st.session_state.get('yahoo_tickers', [])
     if tickers:
-        scan_limit = st.sidebar.slider(
-            "要掃描前幾檔？ (掃描越多越慢，請控制數量)",
-            10,
-            min(len(tickers), 100),
-            30
-        )
-        st.sidebar.write(f"目前掃描清單數量：{scan_limit} 檔 (總清單數: {len(st.session_state['all_tickers'])})")
-        tickers = tickers[:scan_limit]
+        tickers = tickers[:scan_limit]  # 限制掃描數量
+        st.sidebar.write(f"目前掃描清單數量：{len(tickers)} 檔 (來自 Yahoo 熱門榜單)")
     else:
-        st.sidebar.warning("請點擊按鈕取得所有股票清單")
+        st.sidebar.warning("請點擊按鈕抓取股票")
 
 st.sidebar.markdown("---")
 
