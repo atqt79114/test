@@ -7,8 +7,12 @@ from bs4 import BeautifulSoup
 import re
 import ta.trend as trend
 import time
-# 【非常重要！確保這段程式碼存在於檔案頂部】
+
+# ==============================================================================
+# 【關鍵 SSL 繞過代碼】解決連線臺灣官方網站的憑證驗證失敗問題
+# ==============================================================================
 import ssl
+
 try:
     _create_unverified_https_context = ssl._create_unverified_context
 except AttributeError:
@@ -17,7 +21,8 @@ except AttributeError:
 else:
     ssl._create_default_https_context = _create_unverified_https_context
 # ==============================================================================
-# 以下是您的函式定義和頁面設定
+
+
 # --- 頁面設定 ---
 st.set_page_config(page_title="股票策略篩選器 (全市場掃描版)", layout="wide")
 st.title("📈 股票策略篩選器 (多策略選擇)")
@@ -25,21 +30,21 @@ st.markdown("---")
 
 
 # ==============================================================================
-# 【功能函式】爬取所有上市上櫃股票代號清單
+# 【功能函式】爬取所有上市上櫃股票代號清單 (還原官方來源)
 # ==============================================================================
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=86400)  # 設定快取，每天只更新一次
 def get_all_tw_tickers():
     """
-    從公開來源爬取所有台灣上市櫃股票代號清單
+    從證交所/櫃買中心爬取所有台灣上市櫃股票代號清單 (必須依賴 lxml 和 SSL 繞過)
     """
-    st.info("正在連線 TAI/OTC 網站抓取所有股票代號清單...")
+    st.info("正在連線 TAI/OTC 網站抓取所有股票代號清單... (請確保已安裝 lxml)")
     all_tickers = []
 
     # 爬取上市公司清單 (TSE)
     try:
         url_tse = 'https://isin.twse.com.tw/isin/C_public.jsp?strMode=2'
-        df_tse = pd.read_html(url_tse)[0]
-        df_tse = df_tse.iloc[1:]
+        df_tse = pd.read_html(url_tse)[0]  # 需要 lxml 進行解析
+        df_tse = df_tse.iloc[1:]  # 移除表頭
 
         for item in df_tse[0]:
             parts = item.split()
@@ -51,8 +56,8 @@ def get_all_tw_tickers():
     # 爬取上櫃公司清單 (OTC)
     try:
         url_otc = 'https://isin.twse.com.tw/isin/C_public.jsp?strMode=4'
-        df_otc = pd.read_html(url_otc)[0]
-        df_otc = df_otc.iloc[1:]
+        df_otc = pd.read_html(url_otc)[0]  # 需要 lxml 進行解析
+        df_otc = df_otc.iloc[1:]  # 移除表頭
 
         for item in df_otc[0]:
             parts = item.split()
@@ -66,7 +71,10 @@ def get_all_tw_tickers():
 
 
 # ==============================================================================
-# 【策略函式】
+
+
+# ==============================================================================
+# 【策略函式】(保持不變)
 # ==============================================================================
 
 # 策略 1: 盤整突破 (日線)
@@ -79,12 +87,10 @@ def check_strategy_consolidation(ticker):
 
         try:
             high_series = df['High'].iloc[:, 0] if isinstance(df['High'], pd.DataFrame) else df['High']
-
             close_val = current['Close'].iloc[0] if isinstance(current['Close'], pd.Series) else float(current['Close'])
             vol_current = current['Volume'].iloc[0] if isinstance(current['Volume'], pd.Series) else float(
                 current['Volume'])
             vol_prev = prev['Volume'].iloc[0] if isinstance(prev['Volume'], pd.Series) else float(prev['Volume'])
-
         except:
             return None
 
@@ -174,10 +180,11 @@ def check_strategy_high_level_dance(ticker):
 
 
 # ==============================================================================
+
+
+# ==============================================================================
 # 【策略列表與側邊欄邏輯】
 # ==============================================================================
-
-# 定義策略字典
 STRATEGIES = {
     "盤整突破": {"func": check_strategy_consolidation, "emoji": "🔥"},
     "5分K突破": {"func": check_strategy_5m_breakout, "emoji": "⚡"},
@@ -203,7 +210,7 @@ if source_option == "手動輸入代號":
 
 else:  # 自動抓取所有上市上櫃股模式
     if st.sidebar.button("🚀 取得所有股票清單"):
-        with st.spinner("正在連線 TAI/OTC 抓取所有股票代號清單..."):
+        with st.spinner("正在抓取股票清單中..."):
             all_list = get_all_tw_tickers()
         st.session_state['all_tickers'] = all_list
         st.success(f"成功抓到 {len(all_list)} 檔股票！")
@@ -225,10 +232,9 @@ st.sidebar.markdown("---")
 
 # --- 側邊欄：策略選擇 (Checkbox) ---
 st.sidebar.header("🎯 策略篩選")
-# 根據策略字典創建 Checkbox
 selected_strategies = []
 for name, details in STRATEGIES.items():
-    if st.sidebar.checkbox(f"{details['emoji']} {name}", value=True if name == "高檔飛舞" else False):
+    if st.sidebar.checkbox(f"{details['emoji']} {name}", value=False):  # 預設都不勾選
         selected_strategies.append(name)
 
 st.sidebar.info("請勾選您想掃描的策略")
@@ -244,52 +250,42 @@ if st.button("開始掃描策略", type="primary"):
     else:
         st.write(f"正在掃描 {len(tickers)} 檔股票，執行 {len(selected_strategies)} 個策略... (請耐心等候)")
 
-        # 動態創建結果字典，只包含被選中的策略
         results = {name: [] for name in selected_strategies}
-
         my_bar = st.progress(0)
 
         for i, ticker in enumerate(tickers):
             my_bar.progress((i + 1) / len(tickers))
 
             for name in selected_strategies:
-                # 動態呼叫對應的策略函式
                 check_func = STRATEGIES[name]["func"]
                 r = check_func(ticker)
                 if r:
-                    # 將股票代號加入結果字典中
-                    r["策略名稱"] = name  # 新增策略名稱欄位
+                    r["策略名稱"] = name
                     results[name].append(r)
 
             # 防鎖定機制：每掃描 5 檔股票，就暫停 1.5 秒
             if (i + 1) % 5 == 0:
                 time.sleep(1.5)
 
-        my_bar.empty()  # 清除進度條
-
+        my_bar.empty()
         st.subheader("📊 掃描結果")
 
-        # 動態顯示結果：創建欄位來顯示結果
+        # 動態顯示結果
         num_cols = len(selected_strategies)
-        # 限制欄位數最多為 3，超過就用循環來排版
         cols = st.columns(min(num_cols, 3))
-
         col_index = 0
 
         for name in selected_strategies:
-            current_col = cols[col_index % 3]  # 循環使用 col1, col2, col3
+            current_col = cols[col_index % 3]
 
             with current_col:
                 emoji = STRATEGIES[name]['emoji']
                 st.markdown(f"### {emoji} {name} 訊號")
 
                 if results[name]:
-                    # 移除策略名稱欄位，因為標題已經有了
                     df_result = pd.DataFrame(results[name]).drop(columns=['策略名稱'], errors='ignore')
                     st.dataframe(df_result, use_container_width=True)
                 else:
                     st.info("無符合條件股票")
 
             col_index += 1
-
-# --- 結束 ---
