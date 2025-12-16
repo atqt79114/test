@@ -7,9 +7,8 @@ from bs4 import BeautifulSoup
 import re
 import ta.trend as trend
 import time
+# 【非常重要！確保這段程式碼存在於檔案頂部】
 import ssl
-
-# 【新增：設定為不驗證 SSL 憑證，以解決雲端環境連線證交所網站的問題】
 try:
     _create_unverified_https_context = ssl._create_unverified_context
 except AttributeError:
@@ -17,7 +16,8 @@ except AttributeError:
     pass
 else:
     ssl._create_default_https_context = _create_unverified_https_context
-
+# ==============================================================================
+# 以下是您的函式定義和頁面設定
 # --- 頁面設定 ---
 st.set_page_config(page_title="股票策略篩選器 (全市場掃描版)", layout="wide")
 st.title("📈 股票策略篩選器 (多策略選擇)")
