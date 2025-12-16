@@ -5,7 +5,8 @@ import ta
 import requests
 from bs4 import BeautifulSoup
 import re
-import ta.trend as trend  # 引入 ta.trend 用於 MA 計算
+import ta.trend as trend
+import time  # <-- 【優化】用於加入延遲，避免 yfinance 被鎖定
 
 # --- 頁面設定 ---
 st.set_page_config(page_title="股票策略篩選器 (自動抓榜版)", layout="wide")
@@ -14,7 +15,7 @@ st.markdown("---")
 
 
 # --- 功能函數：爬取 Yahoo 漲幅榜 ---
-@st.cache_data(ttl=300)  # 設定快取，5分鐘內不會重複爬網頁，加快速度
+@st.cache_data(ttl=300)  # 設定快取，5分鐘內不會重複爬網頁
 def get_yahoo_top_gainers(limit=50):
     """
     爬取 Yahoo 股市上市與上櫃的漲幅排行榜
@@ -41,6 +42,7 @@ def get_yahoo_top_gainers(limit=50):
 
             for link in links:
                 href = link.get('href')
+                # 提取代號 (例如 2330.TW)
                 match = re.search(r'(\d{4}\.TW[O]?)', href)
                 if match:
                     ticker = match.group(1)
@@ -60,6 +62,7 @@ def get_yahoo_top_gainers(limit=50):
 # --- 策略 1: 盤整突破 (日線) ---
 def check_strategy_consolidation(ticker):
     try:
+        # 下載日線資料
         df = yf.download(ticker, period="3mo", interval="1d", progress=False)
         if len(df) < 21: return None
 
@@ -71,12 +74,16 @@ def check_strategy_consolidation(ticker):
             if isinstance(high_series, pd.DataFrame):
                 high_series = high_series.iloc[:, 0]
 
-            close_val = float(current['Close'])
-            vol_current = float(current['Volume'])
-            vol_prev = float(prev['Volume'])
+            # 修正 Pandas/yfinance FutureWarning 的安全取值方式
+            close_val = current['Close'].iloc[0] if isinstance(current['Close'], pd.Series) else float(current['Close'])
+            vol_current = current['Volume'].iloc[0] if isinstance(current['Volume'], pd.Series) else float(
+                current['Volume'])
+            vol_prev = prev['Volume'].iloc[0] if isinstance(prev['Volume'], pd.Series) else float(prev['Volume'])
+
         except:
             return None
 
+        # 定義盤整：過去 20 天最高價
         past_20_high = high_series[:-1].tail(20).max()
 
         cond_breakout = close_val > past_20_high
@@ -98,18 +105,14 @@ def check_strategy_consolidation(ticker):
 # --- 策略 2: 5分K 帶量過 20MA ---
 def check_strategy_5m_breakout(ticker):
     try:
+        # 下載 5 分 K 資料
         df = yf.download(ticker, period="5d", interval="5m", progress=False)
         if len(df) < 21: return None
 
         # 處理欄位
-        close_series = df['Close']
-        if isinstance(close_series, pd.DataFrame): close_series = close_series.iloc[:, 0]
-
-        open_series = df['Open']
-        if isinstance(open_series, pd.DataFrame): open_series = open_series.iloc[:, 0]
-
-        vol_series = df['Volume']
-        if isinstance(vol_series, pd.DataFrame): vol_series = vol_series.iloc[:, 0]
+        close_series = df['Close'].iloc[:, 0] if isinstance(df['Close'], pd.DataFrame) else df['Close']
+        open_series = df['Open'].iloc[:, 0] if isinstance(df['Open'], pd.DataFrame) else df['Open']
+        vol_series = df['Volume'].iloc[:, 0] if isinstance(df['Volume'], pd.DataFrame) else df['Volume']
 
         # 計算 MA
         ma20 = ta.trend.sma_indicator(close_series, window=20)
@@ -188,8 +191,32 @@ def check_strategy_high_level_dance(ticker):
 
 
 # --- 側邊欄：設定來源 --- (保持不變)
-# ... 側邊欄程式碼 ...
+st.sidebar.header("🔍 股票來源設定")
+source_option = st.sidebar.radio("請選擇股票來源：", ["手動輸入代號", "自動抓取 Yahoo 漲幅榜"])
 
+if source_option == "手動輸入代號":
+    default_tickers = "2330.TW, 2317.TW, 2454.TW, 3231.TW, 2603.TW"
+    ticker_input = st.sidebar.text_area("輸入股票代碼 (逗號分隔)", default_tickers)
+    tickers = [t.strip().upper() for t in ticker_input.split(",") if t.strip()]
+    st.sidebar.info(f"目前清單數量: {len(tickers)} 檔")
+
+else:  # 自動抓取模式
+    scan_limit = st.sidebar.slider("要掃描前幾名？(建議 30-50 以免太久)", 10, 100, 30)
+    if st.sidebar.button("🚀 立即抓取最新漲幅榜"):
+        with st.spinner("正在連線 Yahoo 股市抓取資料..."):
+            scraped_tickers = get_yahoo_top_gainers(limit=scan_limit)
+        st.session_state['auto_tickers'] = scraped_tickers
+        st.success(f"成功抓到 {len(scraped_tickers)} 檔熱門股！")
+
+    # 讀取抓到的清單
+    tickers = st.session_state.get('auto_tickers', [])
+    if tickers:
+        st.sidebar.write("目前掃描清單：", tickers)
+    else:
+        st.sidebar.warning("請點擊按鈕抓取股票")
+
+st.sidebar.markdown("---")
+st.sidebar.info("注意：Yahoo Finance 報價有延遲。自動抓取功能依賴 Yahoo 網頁結構，若失效請切回手動。")
 
 # --- 主程式邏輯 ---
 # 這次分成三個欄位來顯示三種策略結果
@@ -222,6 +249,10 @@ if st.button("開始掃描策略", type="primary"):
             # 檢查策略 3
             r3 = check_strategy_high_level_dance(ticker)
             if r3: results_strat3.append(r3)
+
+            # 【防鎖定機制】每掃描 5 檔股票，就暫停 1.5 秒，避免 yfinance 被 Rate Limit
+            if (i + 1) % 5 == 0:
+                time.sleep(1.5)
 
         my_bar.empty()  # 清除進度條
 
