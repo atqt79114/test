@@ -9,33 +9,28 @@ import ta.trend as trend
 import time
 
 # --- 頁面設定 ---
-st.set_page_config(page_title="股票策略篩選器 (Yahoo 多榜單來源)", layout="wide")
+st.set_page_config(page_title="股票策略篩選器 (Yahoo 多榜單全量掃描)", layout="wide")
 st.title("📈 股票策略篩選器 (Yahoo 熱門榜單整合)")
 st.markdown("---")
 
 
 # ==============================================================================
-# 【清單抓取功能】抓取 Yahoo 股市多個熱門排行榜的股票
+# 【清單抓取功能】抓取 Yahoo 股市多個熱門排行榜的股票 (無數量限制)
 # ==============================================================================
 @st.cache_data(ttl=300)  # 設定快取，5分鐘內更新一次
-def get_yahoo_multi_rank_tickers(limit=100):
+def get_yahoo_multi_rank_tickers():
     """
-    爬取 Yahoo 股市多個熱門排行榜的股票代號，並合併去重。
+    爬取 Yahoo 股市多個熱門排行榜的所有股票代號，並合併去重。
     """
     st.info("正在連線 Yahoo 股市，抓取指定的多個熱門排行榜股票清單...")
     tickers = set()  # 使用 set 避免重複
 
     # 整合所有您要求的排行榜網址：
     rank_urls = [
-        # 外資買超/賣超
         "https://tw.stock.yahoo.com/rank/foreign_buy_sell?exchange=TAI",  # 外資當日買超/賣超 (上市)
         "https://tw.stock.yahoo.com/rank/foreign_buy_sell?exchange=TWO",  # 外資當日買超/賣超 (上櫃)
-
-        # 漲幅排行
         "https://tw.stock.yahoo.com/rank/change-up?exchange=TAI",  # 台股漲幅排行 (上市)
         "https://tw.stock.yahoo.com/rank/change-up?exchange=TWO",  # 台股漲幅排行 (上櫃)
-
-        # 成交量排行
         "https://tw.stock.yahoo.com/rank/volume?exchange=TAI",  # 台股成交量排行 (上市)
         "https://tw.stock.yahoo.com/rank/volume?exchange=TWO"  # 台股成交量排行 (上櫃)
     ]
@@ -58,14 +53,9 @@ def get_yahoo_multi_rank_tickers(limit=100):
                 match = re.search(r'(\d{4}\.(TW|TWO))', href)
                 if match:
                     ticker = match.group(1).replace('.TWO', '.TW')
-                    tickers.add(ticker)  # 加入 set 中，自動去重
+                    tickers.add(ticker)
 
-            # 如果抓到的股票數量已經足夠，則提前退出
-            if len(tickers) >= limit and len(rank_urls) > 1:
-                break
-
-        # 轉換成列表並限制最終數量
-        return list(tickers)[:limit]
+        return list(tickers)
 
     except Exception as e:
         st.error(f"爬取 Yahoo 排行榜失敗: {e}")
@@ -198,10 +188,9 @@ st.sidebar.header("🔍 股票來源設定")
 
 source_option = st.sidebar.radio(
     "請選擇股票來源：",
-    ["手動輸入代號", "自動抓取 Yahoo 熱門榜單"]  # <-- 統一使用 Yahoo 榜單
+    ["手動輸入代號", "自動抓取 Yahoo 熱門榜單"]
 )
 
-# 初始化 session state
 if 'yahoo_tickers' not in st.session_state:
     st.session_state['yahoo_tickers'] = []
 
@@ -212,19 +201,20 @@ if source_option == "手動輸入代號":
     st.sidebar.info(f"目前清單數量: {len(tickers)} 檔")
 
 else:  # 自動抓取 Yahoo 熱門榜單模式
-    scan_limit = st.sidebar.slider("要掃描前幾名？ (抓取越多，掃描越慢)", 10, 200, 50)
+    # 移除 scan_limit 滑桿，執行全量掃描
 
-    if st.sidebar.button("🚀 立即抓取最新熱門榜單清單"):
+    if st.sidebar.button("🚀 立即抓取並準備全量掃描"):
         with st.spinner("正在連線 Yahoo 股市抓取資料..."):
-            scraped_tickers = get_yahoo_multi_rank_tickers(limit=scan_limit)  # <-- 呼叫多榜單函式
+            # 執行無數量限制的抓取
+            scraped_tickers = get_yahoo_multi_rank_tickers()
         st.session_state['yahoo_tickers'] = scraped_tickers
         st.success(f"成功抓到 {len(scraped_tickers)} 檔熱門股！")
 
     # 讀取抓到的清單
     tickers = st.session_state.get('yahoo_tickers', [])
     if tickers:
-        tickers = tickers[:scan_limit]  # 限制掃描數量
-        st.sidebar.write(f"目前掃描清單數量：{len(tickers)} 檔 (來自 Yahoo 熱門榜單)")
+        # **這裡執行全量掃描：tickers 保持不變**
+        st.sidebar.markdown(f"**💡 即將掃描清單：** **{len(tickers)}** 檔")
     else:
         st.sidebar.warning("請點擊按鈕抓取股票")
 
@@ -244,11 +234,11 @@ st.sidebar.info("請勾選您想掃描的策略")
 # ==============================================================================
 if st.button("開始掃描策略", type="primary"):
     if not tickers:
-        st.error("沒有股票代號！請先在左側輸入或抓取股票清單。")
+        st.error("沒有股票代號！請先在左側輸入或點擊按鈕抓取股票清單。")
     elif not selected_strategies:
         st.warning("請在左側勾選至少一個要執行的策略！")
     else:
-        st.write(f"正在掃描 {len(tickers)} 檔股票，執行 {len(selected_strategies)} 個策略... (請耐心等候)")
+        st.write(f"正在執行全量掃描 **{len(tickers)}** 檔股票，共 **{len(selected_strategies)}** 個策略... (請耐心等候)")
 
         results = {name: [] for name in selected_strategies}
         my_bar = st.progress(0)
