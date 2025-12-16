@@ -9,281 +9,152 @@ import ta.trend as trend
 import time
 
 # --- 頁面設定 ---
-st.set_page_config(page_title="股票策略篩選器 (Yahoo 多榜單全量掃描)", layout="wide")
-st.title("📈 股票策略篩選器 (Yahoo 熱門榜單整合)")
-st.markdown("---")
+st.set_page_config(page_title="股票策略篩選器 (多頭排列版)", layout="wide")
+st.title("📈 股票策略篩選器 (Yahoo 多榜單全量掃描)")
 
 
 # ==============================================================================
-# 【清單抓取功能】抓取 Yahoo 股市多個熱門排行榜的股票 (無數量限制)
+# 【清單抓取功能】Yahoo 股市多個熱門排行榜 (無數量限制)
 # ==============================================================================
-@st.cache_data(ttl=300)  # 設定快取，5分鐘內更新一次
+@st.cache_data(ttl=300)
 def get_yahoo_multi_rank_tickers():
-    """
-    爬取 Yahoo 股市多個熱門排行榜的所有股票代號，並合併去重。
-    """
-    st.info("正在連線 Yahoo 股市，抓取指定的多個熱門排行榜股票清單...")
-    tickers = set()  # 使用 set 避免重複
-
-    # 整合所有您要求的排行榜網址：
+    tickers = set()
     rank_urls = [
-        "https://tw.stock.yahoo.com/rank/foreign_buy_sell?exchange=TAI",  # 外資當日買超/賣超 (上市)
-        "https://tw.stock.yahoo.com/rank/foreign_buy_sell?exchange=TWO",  # 外資當日買超/賣超 (上櫃)
-        "https://tw.stock.yahoo.com/rank/change-up?exchange=TAI",  # 台股漲幅排行 (上市)
-        "https://tw.stock.yahoo.com/rank/change-up?exchange=TWO",  # 台股漲幅排行 (上櫃)
-        "https://tw.stock.yahoo.com/rank/volume?exchange=TAI",  # 台股成交量排行 (上市)
-        "https://tw.stock.yahoo.com/rank/volume?exchange=TWO"  # 台股成交量排行 (上櫃)
+        "https://tw.stock.yahoo.com/rank/change-up?exchange=TWO",
+        "https://tw.stock.yahoo.com/rank/change-up?exchange=TAI",
+        "https://tw.stock.yahoo.com/rank/foreign-investor-sell?exchange=TAI",
+        "https://tw.stock.yahoo.com/rank/foreign-investor-sell?exchange=TWO",
+        "https://tw.stock.yahoo.com/rank/foreign-investor-buy?exchange=TAI",
+        "https://tw.stock.yahoo.com/rank/foreign-investor-buy?exchange=TWO"
     ]
-
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-    }
-
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
     try:
         for url in rank_urls:
             response = requests.get(url, headers=headers)
             soup = BeautifulSoup(response.text, "html.parser")
-
-            # 尋找所有符合股票連結格式的標籤
             links = soup.find_all('a', href=re.compile(r'/quote/\d{4}\.(TW|TWO)'))
-
             for link in links:
-                href = link.get('href')
-                # 提取代號並統一為 .TW 格式
-                match = re.search(r'(\d{4}\.(TW|TWO))', href)
-                if match:
-                    ticker = match.group(1).replace('.TWO', '.TW')
-                    tickers.add(ticker)
-
+                match = re.search(r'(\d{4}\.(TW|TWO))', link.get('href'))
+                if match: tickers.add(match.group(1).replace('.TWO', '.TW'))
         return list(tickers)
-
-    except Exception as e:
-        st.error(f"爬取 Yahoo 排行榜失敗: {e}")
+    except Exception:
         return []
 
 
 # ==============================================================================
+# 【策略 3: 高檔飛舞 (修正：高檔 = 均線多頭排列)】
+# ==============================================================================
+def check_strategy_high_level_dance(ticker):
+    try:
+        # 下載至少 40 天資料以計算 MA20
+        df = yf.download(ticker, period="2mo", interval="1d", progress=False)
+        if len(df) < 30: return None
+
+        # 計算均線
+        df['MA5'] = trend.sma_indicator(df['Close'], window=5)
+        df['MA10'] = trend.sma_indicator(df['Close'], window=10)
+        df['MA20'] = trend.sma_indicator(df['Close'], window=20)
+        df['Vol_MA20'] = trend.sma_indicator(df['Volume'], window=20)
+
+        # 取昨日數據 (排除今日判斷)
+        yest = df.iloc[-1]
+
+        # --- 條件 1: 高檔確認 (均線多頭排列) ---
+        # 定義：MA5 > MA10 > MA20
+        is_bullish = yest['MA5'] > yest['MA10'] and yest['MA10'] > yest['MA20']
+
+        # --- 條件 2: 爆量黑 K ---
+        is_black_k = yest['Close'] < yest['Open']
+        # 爆量：昨日量 > 20日均量 * 1.5
+        is_high_vol = yest['Volume'] > (yest['Vol_MA20'] * 1.5)
+
+        if is_bullish and is_black_k and is_high_vol:
+            return {
+                "股票": ticker,
+                "昨日收盤": round(float(yest['Close']), 2),
+                "昨日量": int(yest['Volume']),
+                "MA5/10/20": f"{round(float(yest['MA5']), 1)}/{round(float(yest['MA10']), 1)}/{round(float(yest['MA20']), 1)}",
+                "量增倍數": f"{round(float(yest['Volume'] / yest['Vol_MA20']), 1)}倍",
+                "訊號": "高檔飛舞 (爆量黑K+多頭排列)"
+            }
+        return None
+    except:
+        return None
 
 
 # ==============================================================================
-# 【策略函式】
+# 其餘策略及主程式邏輯
 # ==============================================================================
-
-# 策略 1: 盤整突破 (日線)
 def check_strategy_consolidation(ticker):
+    # 簡化版盤整突破...
     try:
         df = yf.download(ticker, period="3mo", interval="1d", progress=False)
         if len(df) < 21: return None
-        current = df.iloc[-1]
-        prev = df.iloc[-2]
-
-        try:
-            high_series = df['High'].iloc[:, 0] if isinstance(df['High'], pd.DataFrame) else df['High']
-            close_val = current['Close'].iloc[0] if isinstance(current['Close'], pd.Series) else float(current['Close'])
-            vol_current = current['Volume'].iloc[0] if isinstance(current['Volume'], pd.Series) else float(
-                current['Volume'])
-            vol_prev = prev['Volume'].iloc[0] if isinstance(prev['Volume'], pd.Series) else float(current['Volume'])
-        except:
-            return None
-
-        past_20_high = high_series[:-1].tail(20).max()
-        cond_breakout = close_val > past_20_high
-        cond_volume = vol_current > (vol_prev * 2)
-
-        if cond_breakout and cond_volume:
-            return {
-                "股票": ticker,
-                "現價": round(close_val, 2),
-                "突破價": round(float(past_20_high), 2),
-                "量增倍數": round(vol_current / vol_prev, 1),
-                "訊號": "盤整突破"
-            }
+        curr, prev = df.iloc[-1], df.iloc[-2]
+        past_high = df['High'].iloc[:-1].tail(20).max()
+        if curr['Close'] > past_high and curr['Volume'] > (prev['Volume'] * 2):
+            return {"股票": ticker, "現價": round(float(curr['Close']), 2), "訊號": "盤整突破"}
+    except:
         return None
-    except Exception:
-        return None
+    return None
 
 
-# 策略 2: 5分K 帶量過 20MA
 def check_strategy_5m_breakout(ticker):
+    # 5分K突破邏輯...
     try:
         df = yf.download(ticker, period="5d", interval="5m", progress=False)
         if len(df) < 21: return None
-
-        close_series = df['Close'].iloc[:, 0] if isinstance(df['Close'], pd.DataFrame) else df['Close']
-        open_series = df['Open'].iloc[:, 0] if isinstance(df['Open'], pd.DataFrame) else df['Open']
-        vol_series = df['Volume'].iloc[:, 0] if isinstance(df['Volume'], pd.DataFrame) else df['Volume']
-
-        ma20 = ta.trend.sma_indicator(close_series, window=20)
-
-        current_close = float(close_series.iloc[-1])
-        current_open = float(open_series.iloc[-1])
-        current_ma = float(ma20.iloc[-1])
-        current_vol = float(vol_series.iloc[-1])
-        prev_vol = float(vol_series.iloc[-2])
-
-        cond_cross = (current_close > current_ma) and (current_open < current_ma)
-        cond_volume = current_vol > (prev_vol * 2)
-
-        if cond_cross and cond_volume:
-            return {
-                "股票": ticker,
-                "時間": df.index[-1].strftime('%H:%M'),
-                "現價": round(current_close, 2),
-                "20MA": round(current_ma, 2),
-                "量增倍數": round(current_vol / prev_vol, 1),
-                "訊號": "5分K突破"
-            }
+        ma20 = trend.sma_indicator(df['Close'], window=20)
+        if df['Close'].iloc[-1] > ma20.iloc[-1] and df['Open'].iloc[-1] < ma20.iloc[-1] and df['Volume'].iloc[-1] > (
+                df['Volume'].iloc[-2] * 2):
+            return {"股票": ticker, "現價": round(float(df['Close'].iloc[-1]), 2), "訊號": "5分K突破"}
+    except:
         return None
-    except Exception:
-        return None
+    return None
 
 
-# 策略 3: 高檔飛舞 (只篩選前日爆量黑K)
-def check_strategy_high_level_dance(ticker):
-    try:
-        # 下載近 1 個月資料
-        df = yf.download(ticker, period="1mo", interval="1d", progress=False)
-
-        if len(df) < 21: return None
-
-        # --- 提取昨日數據 ---
-        yesterday = df.iloc[-1]
-
-        # 計算 20 日平均量 (使用昨日之前的 20 天數據)
-        df_vol_20d = yf.download(ticker, period="1mo", interval="1d", progress=False)['Volume']
-        if len(df_vol_20d) < 21: return None
-        avg_vol_20d = df_vol_20d.iloc[:-1].tail(20).mean()
-
-        # --- 條件 1: 高檔確認 (近 20 日漲幅 > 10%) ---
-        close_20d_ago = yf.download(ticker, period="1mo", interval="1d", progress=False)['Close'].iloc[-21]
-        price_change_20d = (yesterday['Close'] / close_20d_ago) - 1
-        is_high_level = price_change_20d > 0.10
-
-        if not is_high_level: return None
-
-        # --- 條件 2: 前日條件 (爆量倒貨黑 K) ---
-        is_yesterday_black_k = yesterday['Close'] < yesterday['Open']
-        is_yesterday_high_vol = yesterday['Volume'] > (avg_vol_20d * 2)
-
-        if is_yesterday_black_k and is_yesterday_high_vol:
-            return {
-                "股票": ticker,
-                "昨日收盤": round(yesterday['Close'], 2),
-                "昨日開盤": round(yesterday['Open'], 2),
-                "昨日量增": f"{round(yesterday['Volume'] / avg_vol_20d, 1)}倍",
-                "20日漲幅": f"{round(price_change_20d * 100, 1)}%",
-                "訊號": "高檔飛舞 (前日爆量黑K)"
-            }
-        return None
-
-    except Exception:
-        return None
-
-
-# ==============================================================================
-
-
-# ==============================================================================
-# 【策略列表與側邊欄邏輯】
-# ==============================================================================
 STRATEGIES = {
     "盤整突破": {"func": check_strategy_consolidation, "emoji": "🔥"},
     "5分K突破": {"func": check_strategy_5m_breakout, "emoji": "⚡"},
     "高檔飛舞": {"func": check_strategy_high_level_dance, "emoji": "💃"}
 }
 
-# --- 側邊欄：股票來源設定 ---
+# --- 側邊欄與執行 ---
 st.sidebar.header("🔍 股票來源設定")
+source_option = st.sidebar.radio("來源：", ["手動輸入", "自動抓取 Yahoo 熱門榜單"])
 
-source_option = st.sidebar.radio(
-    "請選擇股票來源：",
-    ["手動輸入代號", "自動抓取 Yahoo 熱門榜單"]
-)
+if 'yahoo_tickers' not in st.session_state: st.session_state['yahoo_tickers'] = []
 
-if 'yahoo_tickers' not in st.session_state:
-    st.session_state['yahoo_tickers'] = []
-
-if source_option == "手動輸入代號":
-    default_tickers = "2330.TW, 2317.TW, 2454.TW, 3231.TW, 2603.TW"
-    ticker_input = st.sidebar.text_area("輸入股票代碼 (逗號分隔)", default_tickers)
+if source_option == "手動輸入":
+    ticker_input = st.sidebar.text_area("代碼 (逗號分隔)", "2330.TW, 2317.TW")
     tickers = [t.strip().upper() for t in ticker_input.split(",") if t.strip()]
-    st.sidebar.info(f"目前清單數量: {len(tickers)} 檔")
+else:
+    if st.sidebar.button("🚀 抓取 Yahoo 排行榜"):
+        st.session_state['yahoo_tickers'] = get_yahoo_multi_rank_tickers()
+        st.success(f"已抓取 {len(st.session_state['yahoo_tickers'])} 檔")
+    tickers = st.session_state['yahoo_tickers']
 
-else:  # 自動抓取 Yahoo 熱門榜單模式
-
-    if st.sidebar.button("🚀 立即抓取並準備全量掃描"):
-        with st.spinner("正在連線 Yahoo 股市抓取資料..."):
-            scraped_tickers = get_yahoo_multi_rank_tickers()  # 無數量限制的抓取
-        st.session_state['yahoo_tickers'] = scraped_tickers
-        st.success(f"成功抓到 {len(scraped_tickers)} 檔熱門股！")
-
-    # 讀取抓到的清單
-    tickers = st.session_state.get('yahoo_tickers', [])
-    if tickers:
-        # 全量掃描：tickers 保持不變，沒有 scan_limit 滑桿
-        st.sidebar.markdown(f"**💡 即將掃描清單：** **{len(tickers)}** 檔")
-    else:
-        st.sidebar.warning("請點擊按鈕抓取股票")
-
-st.sidebar.markdown("---")
-
-# --- 側邊欄：策略選擇 (Checkbox) ---
 st.sidebar.header("🎯 策略篩選")
-selected_strategies = []
-for name, details in STRATEGIES.items():
-    if st.sidebar.checkbox(f"{details['emoji']} {name}", value=False):
-        selected_strategies.append(name)
+selected_strategies = [name for name, details in STRATEGIES.items() if
+                       st.sidebar.checkbox(f"{details['emoji']} {name}")]
 
-st.sidebar.info("請勾選您想掃描的策略")
-
-# ==============================================================================
-# 【主程式執行邏輯】
-# ==============================================================================
-if st.button("開始掃描策略", type="primary"):
-    if not tickers:
-        st.error("沒有股票代號！請先在左側輸入或點擊按鈕抓取股票清單。")
-    elif not selected_strategies:
-        st.warning("請在左側勾選至少一個要執行的策略！")
+if st.button("開始全量掃描"):
+    if not tickers or not selected_strategies:
+        st.error("請確保已抓取清單且勾選策略")
     else:
-        st.write(f"正在執行全量掃描 **{len(tickers)}** 檔股票，共 **{len(selected_strategies)}** 個策略... (請耐心等候)")
-
         results = {name: [] for name in selected_strategies}
-        my_bar = st.progress(0)
-
+        pbar = st.progress(0)
         for i, ticker in enumerate(tickers):
-            my_bar.progress((i + 1) / len(tickers))
-
+            pbar.progress((i + 1) / len(tickers))
             for name in selected_strategies:
-                check_func = STRATEGIES[name]["func"]
-                r = check_func(ticker)
-                if r:
-                    r["策略名稱"] = name
-                    results[name].append(r)
-
-            # 防鎖定機制：每掃描 5 檔股票，就暫停 1.5 秒
-            if (i + 1) % 5 == 0:
-                time.sleep(1.5)
-
-        my_bar.empty()
-        st.subheader("📊 掃描結果")
-
-        # 動態顯示結果
-        num_cols = len(selected_strategies)
-        cols = st.columns(min(num_cols, 3))
-        col_index = 0
+                res = STRATEGIES[name]["func"](ticker)
+                if res: results[name].append(res)
+            if (i + 1) % 5 == 0: time.sleep(1)
 
         for name in selected_strategies:
-            current_col_index = col_index % 3
-            current_col = cols[current_col_index]
-
-            with current_col:
-                emoji = STRATEGIES[name]['emoji']
-                st.markdown(f"### {emoji} {name} 訊號")
-
-                if results[name]:
-                    df_result = pd.DataFrame(results[name]).drop(columns=['策略名稱'], errors='ignore')
-                    st.dataframe(df_result, use_container_width=True)
-                else:
-                    st.info("無符合條件股票")
-
-            col_index += 1
+            st.subheader(f"{STRATEGIES[name]['emoji']} {name}")
+            if results[name]:
+                st.dataframe(pd.DataFrame(results[name]))
+            else:
+                st.info("無符合標的")
