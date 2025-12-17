@@ -33,7 +33,10 @@ def get_yahoo_multi_rank_tickers():
     rank_urls = [
         "https://tw.stock.yahoo.com/rank/change-up?exchange=TAI",
         "https://tw.stock.yahoo.com/rank/change-up?exchange=TWO",
-        "https://tw.stock.yahoo.com/rank/volume?exchange=TAI"
+        "https://tw.stock.yahoo.com/rank/volume?exchange=TWO",
+        "https://tw.stock.yahoo.com/rank/volume?exchange=TAI",
+        "https://tw.stock.yahoo.com/rank/foreign-investor-sell?exchange=TAI",
+        "https://tw.stock.yahoo.com/rank/foreign-investor-sell?exchange=TWO"
     ]
     headers = {'User-Agent': 'Mozilla/5.0'}
     for url in rank_urls:
