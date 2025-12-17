@@ -5,23 +5,26 @@ import requests
 from bs4 import BeautifulSoup
 import re
 import ta.trend as trend
-import ta.momentum as momentum
 import time
 
 # --- 頁面設定 ---
-st.set_page_config(page_title="量化投生命 - 專業篩選系統", layout="wide")
+st.set_page_config(page_title="量化投生命 - 策略篩選系統", layout="wide")
 
-# 自定義 CSS (深色模式與圖片風格 UI)
+# 強化文字可見度與 UI 顏色
 st.markdown("""
     <style>
     .main { background-color: #0e1117; color: #ffffff; }
-    .stButton>button { width: 100%; background-color: #ff4b4b; color: white; border-radius: 10px; }
     [data-testid="stSidebar"] { background-color: #1e2130; border-right: 1px solid #333; }
-    .stDataFrame { background-color: #1e2130; border-radius: 10px; }
+    [data-testid="stSidebar"] .stMarkdown p { color: #ffffff !important; font-size: 16px; }
+    .stButton>button { width: 100%; background-color: #ff4b4b; color: white !important; font-weight: bold; }
+    .stDataFrame, .stTable { background-color: #1e2130; color: #ffffff !important; }
+    /* 修正表格文字顏色 */
+    div[data-testid="stTable"] th { color: #ff4b4b !important; }
+    div[data-testid="stTable"] td { color: #ffffff !important; }
     </style>
     """, unsafe_allow_html=True)
 
-st.title("🛡️ 量化投生命 - 實時策略篩選")
+st.title("🛡️ 量化投生命 - 實時策略系統")
 
 # ==============================================================================
 # 【核心功能：資料抓取】
@@ -50,125 +53,105 @@ def fetch_yahoo_rankings():
     return sorted(list(tickers))
 
 # ==============================================================================
-# 【策略核心邏輯】
+# 【策略核心邏輯：寫入精確條件】
 # ==============================================================================
-def analyze_stock(ticker, main_strat, filters):
+def analyze_stock(ticker, main_strat):
     try:
         df = yf.download(ticker, period="3mo", interval="1d", progress=False, timeout=10)
-        if len(df) < 20: return None
+        if len(df) < 25: return None
         
         # 指標計算
         df['MA5'] = trend.sma_indicator(df['Close'], window=5)
         df['MA10'] = trend.sma_indicator(df['Close'], window=10)
         df['MA20'] = trend.sma_indicator(df['Close'], window=20)
-        df['VMA20'] = trend.sma_indicator(df['Volume'], window=20)
-        kd = momentum.StochasticOscillator(df['High'], df['Low'], df['Close'], window=9)
-        df['K'], df['D'] = kd.stoch(), kd.stoch_signal()
         
-        curr = df.iloc[-1]
-        prev = df.iloc[-2]
+        curr = df.iloc[-1]   # 今日
+        prev = df.iloc[-2]   # 昨日
+        prev2 = df.iloc[-3]  # 前日
         
         match = False
         
-        # 1. 守護生命線 (回測 5MA 不破)
-        if main_strat == "🛡️ 守護生命線 (回測/支撐)":
-            # 股價低點碰到或接近 5MA，但收盤價站穩 5MA 以上
-            at_support = curr['Low'] <= curr['MA5'] * 1.01 
-            stay_above = curr['Close'] >= curr['MA5']
-            if at_support and stay_above: match = True
-            
-        # 2. 浴火重生 (假跌破)
-        elif main_strat == "🔥 浴火重生 (假跌破)":
-            past_5 = df.iloc[-6:-1]
-            if any(past_5['Close'] < past_5['MA5']) and curr['Close'] > curr['MA5']:
+        # 1. 守護生命線：跌破 10MA 但反彈站上 20MA
+        if main_strat == "🛡️ 守護生命線":
+            # 條件：今日收盤在 20MA 之上，且今日最低點或昨日收盤曾跌破 10MA
+            is_above_20 = curr['Close'] > curr['MA20']
+            had_broken_10 = curr['Low'] < curr['MA10'] or prev['Close'] < prev['MA10']
+            if is_above_20 and had_broken_10:
                 match = True
-                
-        # 3. 高檔飛舞 (多頭排列 + 爆量)
-        elif main_strat == "👑 高檔飛舞 (多頭排列)":
-            is_bullish = curr['MA5'] > curr['MA10'] > curr['MA20']
-            is_high_vol = curr['Volume'] > curr['VMA20'] * 1.2
-            if is_bullish and is_high_vol: match = True
+            
+        # 2. 高檔飛舞：前日爆量黑K + 今日換手
+        elif main_strat == "👑 高檔飛舞":
+            # 條件：昨日為黑K（收<開）且 昨日量 > 前日量 * 1.5
+            is_black_k = prev['Close'] < prev['Open']
+            vol_spike = prev['Volume'] > (prev2['Volume'] * 1.5)
+            # 今日站穩昨日高點或呈現收紅突破
+            today_stable = curr['Close'] > prev['Close']
+            if is_black_k and vol_spike and today_stable:
+                match = True
 
         if not match: return None
 
-        # --- 細部過濾 ---
-        if filters['kd_cross'] and not (prev['K'] < prev['D'] and curr['K'] > curr['D']): return None
-        if filters['vol_up'] and not (curr['Volume'] > prev['Volume'] * 1.5): return None
-        if filters['ma_up'] and not (curr['MA5'] > prev['MA5']): return None
-
-        # --- 整理輸出數據 ---
-        stock_id = ticker.split('.')[0]
-        yahoo_link = f"https://tw.stock.yahoo.com/quote/{ticker}/chart"
-        
         return {
-            "代號": ticker,
-            "現價": round(float(curr['Close']), 2),
-            "漲跌幅": f"{round(((curr['Close']/prev['Close'])-1)*100, 2)}%",
-            "成交量": int(curr['Volume']),
-            "5MA位置": round(float(curr['MA5']), 2),
-            "狀態": "回測不破" if curr['Low'] <= curr['MA5'] else "趨勢強勢",
-            "Yahoo線圖": yahoo_link
+            "股票代號": ticker,
+            "收盤價": round(float(curr['Close']), 2),
+            "5MA": round(float(curr['MA5']), 2),
+            "10MA": round(float(curr['MA10']), 2),
+            "20MA": round(float(curr['MA20']), 2),
+            "昨日量增": f"{round(prev['Volume']/prev2['Volume'], 2)}倍",
+            "Yahoo線圖": f"https://tw.stock.yahoo.com/quote/{ticker}/chart"
         }
     except: return None
 
 # ==============================================================================
-# 【UI 側邊欄佈局】
+# 【UI 介面設計】
 # ==============================================================================
-st.sidebar.header("📂 資料管理")
+# 側邊欄
+st.sidebar.markdown("### 📂 資料庫管理")
 if st.sidebar.button("🚨 強制更新排行榜清單"):
     st.session_state['ticker_pool'] = fetch_yahoo_rankings()
-    st.sidebar.success(f"已更新 {len(st.session_state['ticker_pool'])} 檔標的")
+    st.sidebar.success(f"已獲取 {len(st.session_state['ticker_pool'])} 檔標的")
 
-ticker_list = st.session_state.get('ticker_pool', [])
+ticker_pool = st.session_state.get('ticker_pool', [])
 
 st.sidebar.markdown("---")
-st.sidebar.header("🎯 策略設定")
-selected_strat = st.sidebar.radio("選擇篩選策略：", 
-    ["🛡️ 守護生命線 (回測/支撐)", "🔥 浴火重生 (假跌破)", "👑 高檔飛舞 (多頭排列)"])
+st.sidebar.markdown("### 🎯 策略篩選")
+selected_strat = st.sidebar.radio("請選擇邏輯：", ["🛡️ 守護生命線", "👑 高檔飛舞"])
 
-st.sidebar.subheader("🔍 細部過濾條件")
-filters = {
-    "ma_up": st.sidebar.checkbox("5MA 均線方向向上"),
-    "kd_cross": st.sidebar.checkbox("KD 黃金交叉 (當日)"),
-    "vol_up": st.sidebar.checkbox("成交量 > 昨日 1.5 倍")
-}
-
-# ==============================================================================
-# 【主畫面：執行篩選】
-# ==============================================================================
+# 主畫面
 if st.button("🚀 開始執行全量策略掃描"):
-    if not ticker_list:
-        st.error("請先點擊左側『強制更新排行榜清單』")
+    if not ticker_pool:
+        st.error("請先更新排行榜清單")
     else:
         results = []
-        progress_bar = st.progress(0)
-        status_text = st.empty()
+        pbar = st.progress(0)
+        status = st.empty()
         
-        for i, ticker in enumerate(ticker_list):
-            progress_bar.progress((i + 1) / len(ticker_list))
-            status_text.text(f"正在分析: {ticker}")
-            res = analyze_stock(ticker, selected_strat, filters)
+        for i, t in enumerate(ticker_pool):
+            pbar.progress((i + 1) / len(ticker_pool))
+            status.text(f"分析中: {t}")
+            res = analyze_stock(t, selected_strat)
             if res: results.append(res)
-            
-        status_text.empty()
         
-        if results:
-            st.success(f"掃描完成！符合「{selected_strat}」標的共 {len(results)} 檔")
-            
-            # 轉換為 DataFrame 並顯示
-            df_final = pd.DataFrame(results)
-            
-            # 使用可點擊連結渲染表格
-            st.data_editor(
-                df_final,
-                column_config={
-                    "Yahoo線圖": st.column_config.LinkColumn("點我看線圖", display_text="Open Chart")
-                },
-                use_container_width=True,
-                hide_index=True
-            )
-        else:
-            st.warning(f"目前盤勢中，查無符合「{selected_strat}」的標的。請嘗試取消部分過濾條件。")
+        status.empty()
+        st.session_state['scan_results'] = results
+        if not results:
+            st.warning("目前市場無符合此邏輯的標的。")
+
+# 顯示與勾選
+if 'scan_results' in st.session_state and st.session_state['scan_results']:
+    df = pd.DataFrame(st.session_state['scan_results'])
+    
+    st.subheader("✅ 勾選標的以查看詳細均線價位")
+    selected_tickers = st.multiselect("可多選：", options=df['股票代號'].tolist(), default=df['股票代號'].tolist()[:5])
+    
+    if selected_tickers:
+        selected_df = df[df['股票代號'].isin(selected_tickers)]
+        # 顯示詳細均線表
+        st.table(selected_df[['股票代號', '收盤價', '5MA', '10MA', '20MA', '昨日量增']])
+        
+        # 線圖連結
+        for _, row in selected_df.iterrows():
+            st.markdown(f"🔗 [{row['股票代號']} 技術分析線圖]({row['Yahoo線圖']})")
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("⏳ 系統運作正常 - 100%")
+st.sidebar.markdown("⌛ **系統運作正常 - 100%**")
