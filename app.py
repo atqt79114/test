@@ -8,37 +8,40 @@ import ta.trend as trend
 import time
 
 # --- 頁面設定 ---
-st.set_page_config(page_title="量化投生命 - 實時策略系統", layout="wide")
+st.set_page_config(page_title="量化投生命 - 黑色專業版", layout="wide")
 
-# 強制優化 UI 顏色 (確保深色/淺色模式都能看到字)
+# --- UI 樣式優化 (黑色背景、白色字體) ---
 st.markdown("""
     <style>
-    /* 全域文字顏色與背景強化 */
-    .stApp { background-color: #0e1117; color: #ffffff; }
-    h1, h2, h3, p, span, label { color: #ffffff !important; font-weight: 500 !important; }
+    /* 全域背景與文字 */
+    .stApp { background-color: #000000; color: #ffffff; }
+    h1, h2, h3, p, span, label, div { color: #ffffff !important; }
     
-    /* 側邊欄文字強化 */
-    section[data-testid="stSidebar"] { background-color: #1e2130 !important; }
-    section[data-testid="stSidebar"] * { color: #ffffff !important; }
-    
-    /* 表格字體加亮 */
-    div[data-testid="stTable"] table { color: #ffffff !important; border: 1px solid #444; }
-    div[data-testid="stTable"] th { background-color: #2c313c !important; color: #ff4b4b !important; }
-    
-    /* 修正勾選清單的文字顏色 */
-    div[data-baseweb="select"] * { color: #000000 !important; } /* 下拉選單內部文字用黑色確保清晰 */
-    
-    .stButton>button { width: 100%; background-color: #ff4b4b; color: white !important; font-weight: bold; border-radius: 8px; }
+    /* 側邊欄樣式 */
+    section[data-testid="stSidebar"] { background-color: #111111 !important; border-right: 1px solid #333; }
+    section[data-testid="stSidebar"] .stMarkdown p { font-size: 16px; font-weight: bold; }
+
+    /* 按鈕樣式 */
+    .stButton>button { width: 100%; background-color: #ff4b4b; color: white !important; font-weight: bold; border: none; border-radius: 5px; }
+    .stButton>button:hover { background-color: #ff3333; border: 1px solid #ffffff; }
+
+    /* 表格樣式 */
+    div[data-testid="stTable"] table { color: #ffffff !important; border-collapse: collapse; width: 100%; }
+    div[data-testid="stTable"] th { background-color: #222222 !important; color: #00d1ff !important; border: 1px solid #444; }
+    div[data-testid="stTable"] td { border: 1px solid #444; }
+
+    /* 多選下拉選單文字顏色 */
+    div[data-baseweb="select"] span { color: #000000 !important; }
     </style>
     """, unsafe_allow_html=True)
 
 st.title("🛡️ 量化投生命 - 實時策略系統")
 
 # ==============================================================================
-# 【核心功能：抓取 Yahoo 排行榜】
+# 【核心功能：熱門清單抓取】
 # ==============================================================================
 @st.cache_data(ttl=600)
-def fetch_rankings():
+def fetch_hot_list():
     tickers = set()
     urls = [
        "https://tw.stock.yahoo.com/rank/change-up?exchange=TAI",
@@ -53,7 +56,6 @@ def fetch_rankings():
         try:
             res = requests.get(url, headers=headers, timeout=10)
             soup = BeautifulSoup(res.text, "html.parser")
-            # 修正爬蟲正規表達式，確保抓到 .TW 或 .TWO
             links = soup.find_all('a', href=re.compile(r'/quote/\d{4}\.(TW|TWO)'))
             for link in links:
                 m = re.search(r'(\d{4}\.(TW|TWO))', link.get('href'))
@@ -62,121 +64,115 @@ def fetch_rankings():
     return sorted(list(tickers))
 
 # ==============================================================================
-# 【策略運算：精確寫入篩選邏輯】
+# 【策略運算：精確邏輯寫入】
 # ==============================================================================
-def run_strategy(ticker, mode):
+def analyze_strategy(ticker, mode):
     try:
-        # 下載 60 天資料確保均線穩定
-        raw_df = yf.download(ticker, period="60d", interval="1d", progress=False, timeout=10)
+        # 判斷是需要日線還是 5 分線
+        interval = "5m" if "5分k" in mode.lower() else "1d"
+        period = "5d" if interval == "5m" else "60d"
+        
+        raw_df = yf.download(ticker, period=period, interval=interval, progress=False, timeout=10)
         if raw_df.empty or len(raw_df) < 25: return None
         
-        # 修正 yfinance MultiIndex 問題，確保欄位名稱正確
         df = raw_df.copy()
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
-            
-        # 計算均線
-        df['MA5'] = trend.sma_indicator(df['Close'], window=5)
-        df['MA10'] = trend.sma_indicator(df['Close'], window=10)
-        df['MA20'] = trend.sma_indicator(df['Close'], window=20)
-        
-        curr = df.iloc[-1]   # 今日
-        prev = df.iloc[-2]   # 昨日
-        prev2 = df.iloc[-3]  # 前日
-        
-        is_match = False
-        
-        # 策略 1：守護生命線 (跌破 10MA 但反彈站上 20MA)
-        if mode == "🛡️ 守護生命線":
-            # 邏輯：今日收盤 > 20MA 且 (今日最低點 < 10MA 或 昨日收盤 < 10MA)
-            if curr['Close'] > curr['MA20'] and (curr['Low'] < curr['MA10'] or prev['Close'] < prev['MA10']):
-                is_match = True
-        
-        # 策略 2：高檔飛舞 (突破換手型態)
-        elif mode == "👑 高檔飛舞":
-            # 邏輯：前一日是爆量黑K (量增1.5倍) 且 今日收盤 > 前日收盤
-            vol_spike = prev['Volume'] > (prev2['Volume'] * 1.5)
-            is_black_k = prev['Close'] < prev['Open']
-            today_rebound = curr['Close'] > prev['Close']
-            if vol_spike and is_black_k and today_rebound:
-                is_match = True
-                
-        if not is_match: return None
 
-        return {
-            "代號": ticker,
-            "收盤價": round(float(curr['Close']), 2),
-            "5MA": round(float(curr['MA5']), 2),
-            "10MA": round(float(curr['MA10']), 2),
-            "20MA": round(float(curr['MA20']), 2),
-            "今日成交量": int(curr['Volume']),
-            "Yahoo連結": f"https://tw.stock.yahoo.com/quote/{ticker}/chart"
-        }
-    except Exception as e:
+        # 1. 日線：盤整突破 5MA
+        if mode == "🚀 日線盤整突破 5MA":
+            df['MA5'] = trend.sma_indicator(df['Close'], window=5)
+            # 盤整定義：近 10 日高低差 < 5%
+            recent = df.iloc[-11:-1]
+            price_range = (recent['High'].max() - recent['Low'].min()) / recent['Low'].min()
+            # 突破定義：今日收盤 > 近 10 日最高點 且 收盤 > 5MA
+            if price_range < 0.05 and df['Close'].iloc[-1] > recent['High'].max() and df['Close'].iloc[-1] > df['MA5'].iloc[-1]:
+                return df.iloc[-1], df['MA5'].iloc[-1], df['MA10'].iloc[-1], df['MA20'].iloc[-1]
+
+        # 2. 5分k：爆量突破 20MA
+        elif mode == "⚡ 5分k爆量突破 20MA":
+            df['MA20'] = trend.sma_indicator(df['Close'], window=20)
+            curr = df.iloc[-1]
+            prev = df.iloc[-2]
+            # 爆量：當前量 > 前一根 2 倍；突破：收盤由下往上穿過 20MA
+            if curr['Volume'] > (prev['Volume'] * 2) and prev['Close'] < curr['MA20'] and curr['Close'] > curr['MA20']:
+                # 這裡 10MA/20MA 仍用日線概念或顯示當前 5 分線均線
+                return curr, curr['Close'], curr['MA20'], curr['MA20'] 
+        
+        # 3. 守護生命線 (原邏輯保留)
+        elif mode == "🛡️ 守護生命線":
+            df['MA10'] = trend.sma_indicator(df['Close'], window=10)
+            df['MA20'] = trend.sma_indicator(df['Close'], window=20)
+            if df['Close'].iloc[-1] > df['MA20'].iloc[-1] and (df['Low'].iloc[-1] < df['MA10'].iloc[-1] or df['Close'].iloc[-2] < df['MA10'].iloc[-2]):
+                return df.iloc[-1], df['Close'].iloc[-1], df['MA10'].iloc[-1], df['MA20'].iloc[-1]
+
         return None
+    except: return None
 
 # ==============================================================================
-# 【UI 介面設計】
+# 【介面佈局】
 # ==============================================================================
-st.sidebar.markdown("### 📂 系統控制")
+st.sidebar.markdown("### 📂 資料庫管理")
 if st.sidebar.button("🚨 強制更新排行榜清單"):
-    st.session_state['ticker_list'] = fetch_rankings()
+    st.session_state['ticker_list'] = fetch_hot_list()
     st.sidebar.success(f"已抓取 {len(st.session_state['ticker_list'])} 檔標的")
 
-tickers = st.session_state.get('ticker_list', [])
+ticker_pool = st.session_state.get('ticker_list', [])
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("### 🎯 策略選擇")
-selected_mode = st.sidebar.radio("請選擇邏輯：", ["🛡️ 守護生命線", "👑 高檔飛舞"])
+st.sidebar.markdown("### 🎯 策略篩選模式")
+selected_mode = st.sidebar.radio("請選擇邏輯：", 
+    ["🚀 日線盤整突破 5MA", "⚡ 5分k爆量突破 20MA", "🛡️ 守護生命線"])
 
-# 主程式掃描
-if st.button("🚀 開始執行全量策略掃描"):
-    if not tickers:
+# --- 開始執行掃描 ---
+if st.button("🔴 開始執行全量策略掃描"):
+    if not ticker_pool:
         st.error("請先點擊左側『強制更新排行榜清單』")
     else:
         results = []
         bar = st.progress(0)
         status = st.empty()
         
-        for i, t in enumerate(tickers):
-            bar.progress((i + 1) / len(tickers))
+        for i, t in enumerate(ticker_pool):
+            bar.progress((i + 1) / len(ticker_pool))
             status.markdown(f"**分析中:** `{t}`")
-            data = run_strategy(t, selected_mode)
-            if data: results.append(data)
-            
+            strat_data = analyze_strategy(t, selected_mode)
+            if strat_data:
+                curr_row, m5, m10, m20 = strat_data
+                results.append({
+                    "代號": t,
+                    "現價": round(float(curr_row['Close']), 2),
+                    "5MA": round(float(m5), 2),
+                    "10MA": round(float(m10), 2),
+                    "20MA": round(float(m20), 2),
+                    "成交量": int(curr_row['Volume']),
+                    "Yahoo連結": f"https://tw.stock.yahoo.com/quote/{t}/chart"
+                })
+        
         status.empty()
-        st.session_state['scan_out'] = results
+        st.session_state['final_results'] = results
         if not results:
-            st.warning("目前市場無符合此邏輯的標的，請稍後再試或更換策略。")
+            st.warning("目前市場無符合標的，請更換策略或稍後再掃描。")
 
-# 結果顯示與勾選帶出線圖
-if 'scan_out' in st.session_state and st.session_state['scan_out']:
-    df_res = pd.DataFrame(st.session_state['scan_out'])
+# --- 顯示結果與勾選 ---
+if 'final_results' in st.session_state and st.session_state['final_results']:
+    res_df = pd.DataFrame(st.session_state['final_results'])
     
-    st.markdown("### ✅ 符合策略之標的 (請勾選要查看的股票)")
+    st.markdown("### ✅ 符合標的 (勾選後顯示明細與線圖)")
+    selected_tickers = st.multiselect("選擇股票：", options=res_df['代號'].tolist(), default=res_df['代號'].tolist()[:3])
     
-    # 使用 multiselect 讓用戶選擇
-    selected_items = st.multiselect(
-        "選擇要查看詳細價位與線圖的股票：",
-        options=df_res['代號'].tolist(),
-        default=df_res['代號'].tolist()[:3] if len(df_res) > 3 else df_res['代號'].tolist()
-    )
-    
-    if selected_items:
-        display_df = dfRes = df_res[df_res['代號'].isin(selected_items)]
+    if selected_tickers:
+        detail_df = res_df[res_df['代號'].isin(selected_tickers)]
+        st.table(detail_df[['代號', '現價', '5MA', '10MA', '20MA', '成交量']])
         
-        # 帶出收盤價及 5/10/20MA 均線價位
-        st.markdown("#### 📊 關鍵均線價位表")
-        st.table(display_df[['代號', '收盤價', '5MA', '10MA', '20MA', '今日成交量']])
-        
-        # 帶出線圖連結
+        # 快速線圖連結
         st.markdown("#### 📈 線圖快速通道")
-        cols = st.columns(3)
-        for idx, row in display_df.iterrows():
-            with cols[idx % 3]:
-                st.markdown(f"**[{row['代號']} 技術分析]({row['Yahoo連結']})**")
+        cols = st.columns(len(selected_tickers))
+        for idx, row in detail_df.reset_index().iterrows():
+            with cols[idx]:
+                st.markdown(f"**[{row['代號']} 線圖]({row['Yahoo連結']})**")
     else:
-        st.info("請從上方下拉選單中勾選股票。")
+        st.info("請從上方下拉選單勾選股票以檢視詳情。")
 
 st.sidebar.markdown("---")
-st.sidebar.write("⌛ 系統狀態：正常運作")
+st.sidebar.write("⌛ 系統狀態：黑色專業版已啟動")
