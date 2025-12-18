@@ -58,37 +58,79 @@ def download_daily(ticker):
 # -------------------------------------------------
 
 def strategy_consolidation(ticker):
-    """盤整突破策略 (使用者指定邏輯)"""
+    """
+    【日線盤整突破（均線糾結版）】
+    均線糾結 → 放量突破壓力 → 收盤站穩
+    """
     try:
         df = download_daily(ticker)
-        if len(df) < 21:
+        if len(df) < 70:
             return None
 
-        # 確保取出來的是純量 (scalar)
-        vol_mean = float(df["Volume"].tail(10).mean())
-        if vol_mean < 500_000:
+        close_series = df["Close"]
+        close = float(close_series.iloc[-1])
+        open_price = float(df["Open"].iloc[-1])
+        high = float(df["High"].iloc[-1])
+        low = float(df["Low"].iloc[-1])
+        volume = df["Volume"]
+
+        # === 均線 ===
+        ma5  = ta.trend.sma_indicator(close_series, 5)
+        ma10 = ta.trend.sma_indicator(close_series, 10)
+        ma20 = ta.trend.sma_indicator(close_series, 20)
+        ma60 = ta.trend.sma_indicator(close_series, 60)
+
+        ma5_now  = float(ma5.iloc[-1])
+        ma10_now = float(ma10.iloc[-1])
+        ma20_now = float(ma20.iloc[-1])
+        ma60_now = float(ma60.iloc[-1])
+
+        # -------------------------------------------------
+        # 條件 1：均線糾結（核心）
+        # -------------------------------------------------
+        ma_spread = (
+            max(ma5_now, ma10_now, ma20_now, ma60_now)
+            - min(ma5_now, ma10_now, ma20_now, ma60_now)
+        ) / close
+
+        if ma_spread > 0.03:
             return None
 
-        close = float(df["Close"].iloc[-1])
-        prev_vol = float(df["Volume"].iloc[-2])
-        vol = float(df["Volume"].iloc[-1])
-        
-        # 計算前20天(不含今天)的最高價
-        # iloc[:-1] 排除今天，tail(20) 取近20天，max() 取最大值
-        high20 = float(df["High"].iloc[:-1].tail(20).max())
+        # -------------------------------------------------
+        # 條件 2：盤整區壓力
+        # -------------------------------------------------
+        resistance = df["High"].iloc[:-1].tail(20).max()
 
-        # 簡單過濾 divide by zero
-        if prev_vol == 0:
+        if close < resistance * 1.005:
             return None
 
-        # 條件：收盤突破20日高點 且 量增2倍
-        if close > high20 and vol > prev_vol * 2:
-            return {
-                "股票": ticker,
-                "現價": round(close, 2),
-                "突破價": round(high20, 2),
-                "量增倍數": round(vol / prev_vol, 1),
-            }
+        # -------------------------------------------------
+        # 條件 3：放量但不失控
+        # -------------------------------------------------
+        vol_ma5 = volume.rolling(5).mean()
+        if volume.iloc[-1] < vol_ma5.iloc[-2] * 1.5:
+            return None
+
+        # -------------------------------------------------
+        # 條件 4：收盤站穩（實體夠）
+        # -------------------------------------------------
+        body = abs(close - open_price)
+        range_ = high - low
+
+        if range_ == 0 or body / range_ < 0.5:
+            return None
+
+        return {
+            "股票": ticker,
+            "現價": round(close, 2),
+            "突破壓力": round(resistance, 2),
+            "MA5": round(ma5_now, 2),
+            "MA10": round(ma10_now, 2),
+            "MA20": round(ma20_now, 2),
+            "MA60": round(ma60_now, 2),
+            "均線糾結度": f"{round(ma_spread * 100, 2)}%"
+        }
+
     except Exception:
         return None
     return None
