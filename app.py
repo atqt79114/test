@@ -11,31 +11,34 @@ warnings.filterwarnings("ignore")
 # -------------------------------------------------
 # 頁面設定
 # -------------------------------------------------
-st.set_page_config(page_title="股票策略篩選器（突破+洗盤版）", layout="wide")
-st.title("📈 股票策略篩選器（突破+洗盤版）")
+st.set_page_config(page_title="股票策略篩選器（實戰修正版）", layout="wide")
+st.title("📈 股票策略篩選器（實戰修正版）")
 st.markdown("""
 ---
-**策略說明：**
-1. **日線盤整突破**：均線糾結 → 放量突破壓力 → 收盤站穩。
-2. **爆量回檔洗盤**：強多頭 → 昨日爆量洗盤 → 今日量縮守 MA5。
+**策略邏輯優化說明：**
+1. **爆量回檔**：放寬均線限制（允許 MA5 短暫跌破），移除下影線強制作法，專注於「守住 MA5」。
+2. **盤整突破**：均線糾結排除 MA60（季線），只看短中期（5/10/20）是否蓄勢待發。
 ---
 """)
 
 # -------------------------------------------------
-# 股票清單（SSL 穩定版）
+# 股票清單
 # -------------------------------------------------
 @st.cache_data(ttl=86400)
 def get_all_tw_tickers():
     headers = {"User-Agent": "Mozilla/5.0"}
     tickers = []
-    for mode in ["2", "4"]:  # 2=上市, 4=上櫃
+    for mode in ["2", "4"]:
         url = f"https://isin.twse.com.tw/isin/C_public.jsp?strMode={mode}"
-        r = requests.get(url, headers=headers, verify=False, timeout=10)
-        df = pd.read_html(r.text)[0].iloc[1:]
-        for item in df[0]:
-            code = str(item).split()[0]
-            if code.isdigit() and len(code) == 4:
-                tickers.append(f"{code}.TW")
+        try:
+            r = requests.get(url, headers=headers, verify=False, timeout=10)
+            df = pd.read_html(r.text)[0].iloc[1:]
+            for item in df[0]:
+                code = str(item).split()[0]
+                if code.isdigit() and len(code) == 4:
+                    tickers.append(f"{code}.TW")
+        except Exception:
+            pass
     return sorted(set(tickers))
 
 # -------------------------------------------------
@@ -43,85 +46,86 @@ def get_all_tw_tickers():
 # -------------------------------------------------
 @st.cache_data(ttl=300)
 def download_daily(ticker):
-    df = yf.download(ticker, period="1y", interval="1d", progress=False)
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    return df
+    # 這裡如果不加 try-except，有些下市股票會讓程式報錯
+    try:
+        df = yf.download(ticker, period="1y", interval="1d", progress=False)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        return df
+    except:
+        return pd.DataFrame()
 
 # -------------------------------------------------
-# 策略一：爆量回檔 / 洗盤低接（含 500 張過濾）
+# 策略一：爆量回檔 / 洗盤低接
 # -------------------------------------------------
 def strategy_washout_rebound(ticker):
     try:
         df = download_daily(ticker)
-        if len(df) < 60:
-            return None
+        if len(df) < 60: return None
 
         close = df["Close"]
         open_p = df["Open"]
-        high = df["High"]
-        low = df["Low"]
+        # high = df["High"] # 暫時用不到
+        # low = df["Low"]   # 暫時用不到
         volume = df["Volume"]
 
-        # === 流動性（至少 500 張）===
-        if volume.iloc[-2] < 500_000:
-            return None
+        # === 流動性（放寬至 300 張，避免錯過中小型股）===
+        if volume.iloc[-2] < 300_000: return None
 
         # === 均線 ===
         ma5  = ta.trend.sma_indicator(close, 5)
-        ma10 = ta.trend.sma_indicator(close, 10)
         ma20 = ta.trend.sma_indicator(close, 20)
         ma60 = ta.trend.sma_indicator(close, 60)
 
-        # === 昨日 ===
-        c_prev = close.iloc[-2]
-        o_prev = open_p.iloc[-2]
-        h_prev = high.iloc[-2]
-        l_prev = low.iloc[-2]
-        v_prev = volume.iloc[-2]
+        # === 昨日數據 (T-1) ===
+        c_prev = float(close.iloc[-2])
+        o_prev = float(open_p.iloc[-2])
+        v_prev = float(volume.iloc[-2])
 
-        # === 今日 ===
-        c_now = close.iloc[-1]
-        v_now = volume.iloc[-1]
+        # === 今日數據 (T) ===
+        c_now = float(close.iloc[-1])
+        v_now = float(volume.iloc[-1])
+        ma5_now = float(ma5.iloc[-1])
+        ma20_now = float(ma20.iloc[-1])
+        ma60_now = float(ma60.iloc[-1])
 
-        # 條件 1：多頭結構
-        if not (ma5.iloc[-1] > ma10.iloc[-1] > ma20.iloc[-1] > ma60.iloc[-1]):
+        # 【修正1】條件：中長期多頭即可，短期允許混亂
+        # 只要 MA20 > MA60 (月線在季線之上) 且 股價 > MA20 (還在生命線上)
+        if not (ma20_now > ma60_now and c_now > ma20_now):
             return None
 
-        # 條件 2：昨日爆量洗盤黑 K
-        if c_prev >= o_prev:
+        # 【條件2】昨日爆量洗盤黑 K
+        # 2-1: 收黑 K (Close < Open)
+        if c_prev >= o_prev: return None
+        
+        # 2-2: 爆量 (昨日量 > 5日均量 * 1.5)
+        vol_ma5_prev = float(volume.rolling(5).mean().iloc[-2])
+        if v_prev < vol_ma5_prev * 1.5: return None
+
+        # 【修正2】移除「下影線 > 0.3」的限制
+        # 洗盤通常是恐慌殺盤，不一定有長下影線。
+        # 我們改用「實體長度」判斷，跌幅要夠才有洗盤效果 (例如跌 > 1.5%)
+        prev_pct_change = (c_prev / float(close.iloc[-3]) - 1)
+        if prev_pct_change > -0.015: # 如果跌幅小於 1.5%，不算洗盤
             return None
 
-        vol_ma5 = volume.rolling(5).mean()
-        if v_prev < vol_ma5.iloc[-2] * 1.5:
-            return None
+        # 【條件3】今日量縮守 MA5
+        # 3-1: 站回 MA5
+        if c_now < ma5_now: return None
 
-        if h_prev == l_prev:
-            return None
+        # 3-2: 今日量縮 (比昨日少)
+        if v_now > v_prev: return None
 
-        lower_shadow = (min(o_prev, c_prev) - l_prev) / (h_prev - l_prev)
-        if lower_shadow < 0.3:
-            return None
-
-        # 條件 3：今日量縮守 MA5
-        if c_now < ma5.iloc[-1]:
-            return None
-
-        if v_now > v_prev * 0.8:
-            return None
-
-        # 條件 4：不追價
-        if (c_now / c_prev - 1) > 0.02:
-            return None
+        # 【條件4】不追價 (今日漲幅 < 3%)
+        # 既然是低接，漲太多就不要了
+        if (c_now / c_prev - 1) > 0.03: return None
 
         return {
             "股票": ticker,
             "現價": round(c_now, 2),
-            "MA5": round(ma5.iloc[-1], 2),
-            "MA10": round(ma10.iloc[-1], 2),
-            "MA20": round(ma20.iloc[-1], 2),
-            "狀態": "爆量洗盤｜量縮守MA5",
-            "昨日量": int(v_prev)
+            "MA5": round(ma5_now, 2),
+            "昨日跌幅": f"{round(prev_pct_change*100, 2)}%",
+            "狀態": "爆量洗盤後守穩"
         }
 
     except Exception:
@@ -133,8 +137,7 @@ def strategy_washout_rebound(ticker):
 def strategy_consolidation(ticker):
     try:
         df = download_daily(ticker)
-        if len(df) < 260:
-            return None
+        if len(df) < 120: return None
 
         close = df["Close"]
         open_p = df["Open"]
@@ -143,54 +146,44 @@ def strategy_consolidation(ticker):
         volume = df["Volume"]
 
         # === 流動性 ===
-        if volume.iloc[-1] < 500_000:
-            return None
+        if volume.iloc[-1] < 500_000: return None
 
-        # === 均線 ===
-        ma5   = ta.trend.sma_indicator(close, 5)
-        ma10  = ta.trend.sma_indicator(close, 10)
-        ma20  = ta.trend.sma_indicator(close, 20)
-        ma60  = ta.trend.sma_indicator(close, 60)
-        ma240 = ta.trend.sma_indicator(close, 240)
+        c_now = float(close.iloc[-1])
+        ma5  = ta.trend.sma_indicator(close, 5)
+        ma10 = ta.trend.sma_indicator(close, 10)
+        ma20 = ta.trend.sma_indicator(close, 20)
+        ma60 = ta.trend.sma_indicator(close, 60)
+        
+        # 1. 大趨勢：年線或半年線之上 (這裡用 60MA 季線當生命線)
+        if c_now < ma60.iloc[-1]: return None
 
-        c_now = close.iloc[-1]
+        # 【修正3】均線糾結計算：只看 5, 10, 20
+        # 如果把 60MA 加進來，要求 3.5% 幾乎抓不到股票
+        ma_vals = [ma5.iloc[-1], ma10.iloc[-1], ma20.iloc[-1]]
+        ma_max = max(ma_vals)
+        ma_min = min(ma_vals)
+        
+        # 糾結定義：(最大均線 - 最小均線) / 股價 < 5% (放寬到 5%)
+        ma_spread = (ma_max - ma_min) / c_now
+        if ma_spread > 0.05: return None
 
-        # 條件 1：長期方向（年線之上）
-        if c_now < ma240.iloc[-1]:
-            return None
+        # 2. 突破壓力：收盤價 > 過去 20 天最高價
+        resistance = float(high.iloc[:-1].tail(20).max())
+        if c_now <= resistance: return None
 
-        # 條件 2：均線糾結
-        ma_vals = [ma5.iloc[-1], ma10.iloc[-1], ma20.iloc[-1], ma60.iloc[-1]]
-        ma_spread = (max(ma_vals) - min(ma_vals)) / c_now
-        if ma_spread > 0.035:
-            return None
+        # 3. 放量突破：量 > 5日均量 * 1.5
+        vol_ma5 = float(volume.rolling(5).mean().iloc[-2])
+        if volume.iloc[-1] < vol_ma5 * 1.5: return None
 
-        # 條件 3：盤整壓力突破
-        resistance = high.iloc[:-1].tail(20).max()
-        if c_now < resistance * 1.01:
-            return None
-
-        # 條件 4：放量突破
-        vol_ma5 = volume.rolling(5).mean()
-        if volume.iloc[-1] < vol_ma5.iloc[-2] * 1.5:
-            return None
-
-        # 條件 5：收盤站穩（實體夠）
-        body = abs(c_now - open_p.iloc[-1])
-        rng = high.iloc[-1] - low.iloc[-1]
-        if rng == 0 or body / rng < 0.55:
-            return None
+        # 4. 實體紅K確認
+        if c_now < float(open_p.iloc[-1]): return None
 
         return {
             "股票": ticker,
             "現價": round(c_now, 2),
-            "突破壓力": round(resistance, 2),
-            "MA5": round(ma5.iloc[-1], 2),
-            "MA10": round(ma10.iloc[-1], 2),
-            "MA20": round(ma20.iloc[-1], 2),
-            "MA60": round(ma60.iloc[-1], 2),
-            "MA240": round(ma240.iloc[-1], 2),
-            "均線糾結度": f"{round(ma_spread * 100, 2)}%"
+            "突破價": round(resistance, 2),
+            "糾結度": f"{round(ma_spread * 100, 2)}%",
+            "量能": "放量"
         }
 
     except Exception:
@@ -205,56 +198,66 @@ STRATEGIES = {
 }
 
 # -------------------------------------------------
-# Sidebar
+# UI 邏輯保持不變
 # -------------------------------------------------
 st.sidebar.header("股票來源")
 source = st.sidebar.radio("選擇", ["手動", "全市場"])
 
 if source == "手動":
-    raw = st.sidebar.text_area("股票代碼", "2330.TW, 2317.TW, 2603.TW")
+    # 預設一些熱門股，方便你測試有沒有資料
+    raw = st.sidebar.text_area("股票代碼", "2330.TW, 2317.TW, 2603.TW, 3231.TW, 2618.TW, 2609.TW")
     tickers = [x.strip() for x in raw.split(",") if x.strip()]
 else:
     if st.sidebar.button("抓取上市上櫃"):
-        st.session_state["all"] = get_all_tw_tickers()
+        with st.spinner("抓取中...請稍候"):
+            st.session_state["all"] = get_all_tw_tickers()
+    
     all_tickers = st.session_state.get("all", [])
-    scan_limit = st.sidebar.slider("掃描數量限制", 10, 2000, 50)
+    st.sidebar.write(f"已載入: {len(all_tickers)} 檔")
+    scan_limit = st.sidebar.slider("掃描數量限制 (測試用)", 10, 1000, 100)
     tickers = all_tickers[:scan_limit]
 
 st.sidebar.header("策略選擇")
 selected = [k for k in STRATEGIES if st.sidebar.checkbox(k, True)]
 
-# -------------------------------------------------
-# 執行掃描
-# -------------------------------------------------
 if st.button("開始掃描", type="primary"):
-    result = {k: [] for k in selected}
-    bar = st.progress(0.0)
-
-    for i, t in enumerate(tickers):
-        bar.progress((i + 1) / len(tickers), text=f"掃描中：{t}")
-        for k in selected:
-            r = STRATEGIES[k](t)
-            if r:
-                r["策略"] = k
-                result[k].append(r)
-        time.sleep(0.05)
-
-    bar.empty()
-    st.subheader("📊 掃描結果")
-
-    all_rows = []
-    for k in result:
-        if result[k]:
-            st.markdown(f"### {k}")
-            st.dataframe(pd.DataFrame(result[k]), use_container_width=True)
-            all_rows.extend(result[k])
-
-    if all_rows:
-        st.download_button(
-            "📥 下載 CSV",
-            pd.DataFrame(all_rows).to_csv(index=False, encoding="utf-8-sig"),
-            "stock_scan_result.csv",
-            "text/csv"
-        )
+    if not tickers:
+        st.warning("請先輸入代碼或載入全市場")
     else:
-        st.info("無符合條件股票")
+        result = {k: [] for k in selected}
+        bar = st.progress(0.0)
+        status_text = st.empty()
+
+        for i, t in enumerate(tickers):
+            bar.progress((i + 1) / len(tickers))
+            status_text.text(f"正在掃描：{t}")
+            
+            for k in selected:
+                r = STRATEGIES[k](t)
+                if r:
+                    r["策略"] = k
+                    result[k].append(r)
+            # time.sleep(0.01) # 稍微加速
+
+        bar.empty()
+        status_text.empty()
+        st.subheader("📊 掃描結果")
+
+        has_data = False
+        all_rows = []
+        for k in result:
+            if result[k]:
+                has_data = True
+                st.markdown(f"### {k}")
+                st.dataframe(pd.DataFrame(result[k]), use_container_width=True)
+                all_rows.extend(result[k])
+
+        if all_rows:
+            st.download_button(
+                "📥 下載 CSV",
+                pd.DataFrame(all_rows).to_csv(index=False, encoding="utf-8-sig"),
+                "stock_scan_result.csv",
+                "text/csv"
+            )
+        elif not has_data:
+            st.info("沒有符合條件的股票，請嘗試增加掃描數量或更換手動清單。")
