@@ -12,9 +12,15 @@ warnings.filterwarnings("ignore")
 # -------------------------------------------------
 # 頁面設定
 # -------------------------------------------------
-st.set_page_config(page_title="股票策略篩選器（收盤日線版）", layout="wide")
-st.title("📈 股票策略篩選器（收盤日線版）")
-st.markdown("---")
+st.set_page_config(page_title="股票策略篩選器（突破+洗盤版）", layout="wide")
+st.title("📈 股票策略篩選器（突破+洗盤版）")
+st.markdown("""
+---
+**策略說明：**
+1.  **盤整突破 (起漲點)**：尋找整理後「帶量突破」前20日高點的股票。
+2.  **爆量回檔 (買綠/洗盤)**：尋找昨日「爆量收黑」，但今日「守住5日線」且尚未大漲的股票。
+---
+""")
 
 # -------------------------------------------------
 # 股票清單（SSL 穩定版）
@@ -23,7 +29,6 @@ st.markdown("---")
 def get_all_tw_tickers():
     headers = {"User-Agent": "Mozilla/5.0"}
     tickers = []
-
     for mode in ["2", "4"]:  # 2=上市, 4=上櫃
         url = f"https://isin.twse.com.tw/isin/C_public.jsp?strMode={mode}"
         try:
@@ -35,37 +40,25 @@ def get_all_tw_tickers():
                     tickers.append(f"{code}.TW")
         except Exception as e:
             st.error(f"抓取股票清單失敗: {e}")
-            
     return sorted(set(tickers))
 
 # -------------------------------------------------
-# Yahoo 資料快取 (修正 MultiIndex 問題)
+# Yahoo 資料快取
 # -------------------------------------------------
 @st.cache_data(ttl=300)
 def download_daily(ticker):
-    # 下載數據
     df = yf.download(ticker, period="3mo", interval="1d", progress=False)
-    
-    # 【關鍵修正】如果欄位是 MultiIndex，將其扁平化
-    # yfinance 新版可能會回傳 (Price, Ticker) 的格式，這裡強制只留 Price
+    # 【關鍵修正】扁平化 MultiIndex，解決 ValueError
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
-    
-    # 確保欄位名稱乾淨
     return df
 
 # -------------------------------------------------
-# 今日防洗版
+# 策略定義
 # -------------------------------------------------
-today_key = f"seen_{date.today()}"
-if today_key not in st.session_state:
-    st.session_state[today_key] = set()
 
-# -------------------------------------------------
-# 策略定義 (只保留日線策略)
-# -------------------------------------------------
 def strategy_consolidation(ticker):
-    """盤整突破策略"""
+    """盤整突破策略 (使用者指定邏輯)"""
     try:
         df = download_daily(ticker)
         if len(df) < 21:
@@ -79,13 +72,16 @@ def strategy_consolidation(ticker):
         close = float(df["Close"].iloc[-1])
         prev_vol = float(df["Volume"].iloc[-2])
         vol = float(df["Volume"].iloc[-1])
+        
         # 計算前20天(不含今天)的最高價
+        # iloc[:-1] 排除今天，tail(20) 取近20天，max() 取最大值
         high20 = float(df["High"].iloc[:-1].tail(20).max())
 
         # 簡單過濾 divide by zero
         if prev_vol == 0:
             return None
 
+        # 條件：收盤突破20日高點 且 量增2倍
         if close > high20 and vol > prev_vol * 2:
             return {
                 "股票": ticker,
@@ -97,41 +93,60 @@ def strategy_consolidation(ticker):
         return None
     return None
 
-def strategy_high_level(ticker):
-    """高檔飛舞策略"""
+def strategy_washout_rebound(ticker):
+    """
+    【爆量回檔洗盤】(買綠不買紅)
+    邏輯：昨日爆量長黑，今日守住MA5且未大漲
+    """
     try:
         df = download_daily(ticker)
-        if len(df) < 21:
-            return None
+        if len(df) < 30: return None
 
-        vol_mean = float(df["Volume"].tail(10).mean())
-        if vol_mean < 500_000:
-            return None
+        # 取得數據
+        close = df["Close"]
+        open_price = df["Open"]
+        volume = df["Volume"]
+        ma5 = ta.trend.sma_indicator(close, 5)
+        ma20 = ta.trend.sma_indicator(close, 20)
 
-        df["MA5"] = ta.trend.sma_indicator(df["Close"], 5)
+        c_now = float(close.iloc[-1])
+        c_prev = float(close.iloc[-2])
+        o_prev = float(open_price.iloc[-2])
+        v_prev = float(volume.iloc[-2])
+        v_prev_2 = float(volume.iloc[-3])
+        ma5_now = float(ma5.iloc[-1])
+        ma20_now = float(ma20.iloc[-1])
+
+        # 1. 趨勢向上 (MA5 > MA20)
+        if ma5_now < ma20_now: return None
+
+        # 2. 昨天爆量長黑 (收黑K + 跌幅明顯 + 量增1.5倍)
+        is_green = c_prev < o_prev
+        is_drop = (c_prev / float(close.iloc[-3]) - 1) < -0.015
+        is_massive = v_prev > v_prev_2 * 1.5
         
-        close_now = float(df["Close"].iloc[-1])
-        close_20_ago = float(df["Close"].iloc[-20])
-        ma5_now = float(df["MA5"].iloc[-1])
+        if not (is_green and is_massive): return None
 
-        if close_20_ago == 0:
-            return None
+        # 3. 今天守住 MA5 (關鍵)
+        if c_now < ma5_now: return None
 
-        rise20 = (close_now / close_20_ago) - 1
+        # 4. 買綠不買紅 (漲幅小於 2%)
+        pct_change = (c_now / c_prev) - 1
+        if pct_change > 0.02: return None
 
-        if rise20 > 0.1 and close_now > ma5_now:
-            return {
-                "股票": ticker,
-                "現價": round(close_now, 2),
-                "20日漲幅": f"{round(rise20 * 100, 1)}%",
-            }
+        return {
+            "股票": ticker,
+            "現價": round(c_now, 2),
+            "狀態": "守住MA5",
+            "今日漲幅": f"{round(pct_change * 100, 2)}%"
+        }
     except Exception:
         return None
     return None
 
 STRATEGIES = {
-    "盤整突破": strategy_consolidation,
-    "高檔飛舞": strategy_high_level,
+    "盤整突破 (起漲)": strategy_consolidation,
+    "爆量回檔 (買綠)": strategy_washout_rebound,
 }
 
 # -------------------------------------------------
@@ -141,7 +156,7 @@ st.sidebar.header("股票來源")
 source = st.sidebar.radio("選擇", ["手動", "全市場"])
 
 if source == "手動":
-    raw = st.sidebar.text_area("股票代碼", "2330.TW, 2317.TW, 2603.TW")
+    raw = st.sidebar.text_area("股票代碼", "2330.TW, 2317.TW, 2603.TW, 3231.TW, 2354.TW")
     tickers = [x.strip() for x in raw.split(",") if x.strip()]
 else:
     if st.sidebar.button("抓取上市上櫃"):
@@ -149,16 +164,14 @@ else:
             st.session_state["all"] = get_all_tw_tickers()
     
     all_tickers = st.session_state.get("all", [])
-    st.sidebar.write(f"目前清單數量: {len(all_tickers)}")
-    
-    # 為了示範效率，這裡預設只跑前 50 檔，你可以把 [:50] 拿掉跑全部
-    scan_limit = st.sidebar.slider("掃描數量限制 (測試用)", 10, 2000, 50)
+    st.sidebar.write(f"清單數量: {len(all_tickers)}")
+    scan_limit = st.sidebar.slider("掃描數量限制", 10, 2000, 50)
     tickers = all_tickers[:scan_limit]
 
 st.sidebar.header("策略選擇")
 selected = []
 for k in STRATEGIES:
-    if st.sidebar.checkbox(k, True):
+    if st.sidebar.checkbox(k, value=True):
         selected.append(k)
 
 # -------------------------------------------------
@@ -166,28 +179,20 @@ for k in STRATEGIES:
 # -------------------------------------------------
 if st.button("開始掃描", type="primary"):
     if not tickers:
-        st.warning("請先輸入股票代碼或抓取全市場清單")
+        st.warning("請先輸入代碼或抓取清單")
     else:
         result = {k: [] for k in selected}
-        
-        # 進度條
-        progress_text = "掃描進行中..."
-        my_bar = st.progress(0, text=progress_text)
+        my_bar = st.progress(0, text="掃描進行中...")
         
         for i, t in enumerate(tickers):
-            # 更新進度條
             my_bar.progress((i + 1) / len(tickers), text=f"掃描中: {t}")
-            
             for k in selected:
                 r = STRATEGIES[k](t)
                 if r:
                     result[k].append(r)
-            
-            # 稍微休息避免被擋 IP
-            time.sleep(0.1)
+            time.sleep(0.05)
 
         my_bar.empty()
-
         st.subheader("📊 掃描結果")
         
         has_result = False
@@ -197,26 +202,19 @@ if st.button("開始掃描", type="primary"):
             if result[k]:
                 has_result = True
                 st.markdown(f"### {k}")
-                df_res = pd.DataFrame(result[k])
-                st.dataframe(df_res, use_container_width=True)
-                
-                # 收集資料做 CSV
+                st.dataframe(pd.DataFrame(result[k]), use_container_width=True)
                 for row in result[k]:
-                    r_copy = row.copy()
-                    r_copy["策略"] = k
-                    all_rows.append(r_copy)
+                    row["策略"] = k
+                    all_rows.append(row)
 
         if not has_result:
-            st.info("沒有掃描到符合條件的股票")
+            st.info("無符合條件股票")
 
-        # -------------------------------------------------
-        # CSV 匯出
-        # -------------------------------------------------
         if all_rows:
             st.markdown("---")
             df_export = pd.DataFrame(all_rows)
             st.download_button(
-                "📥 下載掃描結果 CSV",
+                "📥 下載 CSV",
                 data=df_export.to_csv(index=False, encoding="utf-8-sig"),
                 file_name="stock_scan_result.csv",
                 mime="text/csv",
