@@ -96,50 +96,76 @@ def strategy_consolidation(ticker):
 def strategy_washout_rebound(ticker):
     """
     【爆量回檔洗盤】(買綠不買紅)
-    邏輯：昨日爆量長黑，今日守住MA5且未大漲
+    顯示 MA5 / MA10 / MA20 價位，方便盤中低接判斷
     """
     try:
         df = download_daily(ticker)
-        if len(df) < 30: return None
+        if len(df) < 30:
+            return None
 
-        # 取得數據
+        # === 取得數據 ===
         close = df["Close"]
         open_price = df["Open"]
         volume = df["Volume"]
+
+        # === 均線 ===
         ma5 = ta.trend.sma_indicator(close, 5)
+        ma10 = ta.trend.sma_indicator(close, 10)
         ma20 = ta.trend.sma_indicator(close, 20)
 
+        # === 價量資料 ===
         c_now = float(close.iloc[-1])
         c_prev = float(close.iloc[-2])
         o_prev = float(open_price.iloc[-2])
+
         v_prev = float(volume.iloc[-2])
         v_prev_2 = float(volume.iloc[-3])
+
         ma5_now = float(ma5.iloc[-1])
+        ma10_now = float(ma10.iloc[-1])
         ma20_now = float(ma20.iloc[-1])
 
-        # 1. 趨勢向上 (MA5 > MA20)
-        if ma5_now < ma20_now: return None
+        # -------------------------------------------------
+        # 條件 1：趨勢向上（MA5 > MA10 > MA20）
+        # -------------------------------------------------
+        if not (ma5_now > ma10_now > ma20_now):
+            return None
 
-        # 2. 昨天爆量長黑 (收黑K + 跌幅明顯 + 量增1.5倍)
-        is_green = c_prev < o_prev
-        is_drop = (c_prev / float(close.iloc[-3]) - 1) < -0.015
+        # -------------------------------------------------
+        # 條件 2：昨日爆量黑 K
+        # -------------------------------------------------
+        is_black = c_prev < o_prev
         is_massive = v_prev > v_prev_2 * 1.5
-        
-        if not (is_green and is_massive): return None
 
-        # 3. 今天守住 MA5 (關鍵)
-        if c_now < ma5_now: return None
+        if not (is_black and is_massive):
+            return None
 
-        # 4. 買綠不買紅 (漲幅小於 2%)
+        # -------------------------------------------------
+        # 條件 3：今日守住 MA5
+        # -------------------------------------------------
+        if c_now < ma5_now:
+            return None
+
+        # -------------------------------------------------
+        # 條件 4：買綠不買紅（避免追高）
+        # -------------------------------------------------
         pct_change = (c_now / c_prev) - 1
-        if pct_change > 0.02: return None
+        if pct_change > 0.02:
+            return None
 
+        # -------------------------------------------------
+        # 回傳結果（含 MA 價位）
+        # -------------------------------------------------
         return {
             "股票": ticker,
             "現價": round(c_now, 2),
-            "狀態": "守住MA5",
+            "MA5": round(ma5_now, 2),
+            "MA10": round(ma10_now, 2),
+            "MA20": round(ma20_now, 2),
+            "狀態": "爆量回檔｜守MA5",
             "今日漲幅": f"{round(pct_change * 100, 2)}%"
         }
+
     except Exception:
         return None
     return None
