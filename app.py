@@ -1,5 +1,6 @@
 # =======================
-# 股票策略篩選器（整合可用最終版）
+# 股票策略篩選器（最終穩定版）
+# CSV 匯出，不依賴 Excel 套件
 # =======================
 
 import streamlit as st
@@ -17,12 +18,12 @@ warnings.filterwarnings("ignore")
 # -------------------------------------------------
 # 頁面設定
 # -------------------------------------------------
-st.set_page_config(page_title="股票策略篩選器（整合版）", layout="wide")
+st.set_page_config(page_title="股票策略篩選器（穩定整合版）", layout="wide")
 st.title("📈 股票策略篩選器（穩定整合版）")
 st.markdown("---")
 
 # -------------------------------------------------
-# 股票清單（上市 + 上櫃）
+# 股票清單（SSL 穩定版）
 # -------------------------------------------------
 @st.cache_data(ttl=86400)
 def get_all_tw_tickers():
@@ -31,8 +32,8 @@ def get_all_tw_tickers():
 
     for mode in ["2", "4"]:  # 2=上市, 4=上櫃
         url = f"https://isin.twse.com.tw/isin/C_public.jsp?strMode={mode}"
-        resp = requests.get(url, headers=headers, verify=False, timeout=10)
-        df = pd.read_html(resp.text)[0].iloc[1:]
+        r = requests.get(url, headers=headers, verify=False, timeout=10)
+        df = pd.read_html(r.text)[0].iloc[1:]
 
         for item in df[0]:
             code = str(item).split()[0]
@@ -94,19 +95,16 @@ def strategy_5m_breakout(ticker):
     close = df["Close"]
     ma20 = ta.trend.sma_indicator(close, 20)
 
-    if (
-        close.iloc[-1] > ma20.iloc[-1]
-        and close.iloc[-2] < ma20.iloc[-2]
-        and float(df["Volume"].iloc[-1]) > float(df["Volume"].iloc[-2]) * 2
-    ):
-        if ticker in st.session_state[today_key]:
-            return None
-        st.session_state[today_key].add(ticker)
-        return {
-            "股票": ticker,
-            "時間": df.index[-1].strftime("%H:%M"),
-            "現價": round(float(close.iloc[-1]), 2),
-        }
+    if close.iloc[-1] > ma20.iloc[-1] and close.iloc[-2] < ma20.iloc[-2]:
+        if float(df["Volume"].iloc[-1]) > float(df["Volume"].iloc[-2]) * 2:
+            if ticker in st.session_state[today_key]:
+                return None
+            st.session_state[today_key].add(ticker)
+            return {
+                "股票": ticker,
+                "時間": df.index[-1].strftime("%H:%M"),
+                "現價": round(float(close.iloc[-1]), 2),
+            }
 
 def strategy_high_level(ticker):
     df = download_daily(ticker)
@@ -165,7 +163,7 @@ for k in STRATEGIES:
 # -------------------------------------------------
 if st.button("開始掃描", type="primary"):
     result = {k: [] for k in selected}
-    bar = st.progress(0.0)
+    bar = st.progress(0)
 
     for i, t in enumerate(tickers):
         bar.progress((i + 1) / len(tickers))
@@ -173,7 +171,7 @@ if st.button("開始掃描", type="primary"):
             r = STRATEGIES[k](t)
             if r:
                 result[k].append(r)
-        time.sleep(0.2)
+        time.sleep(0.3)
 
     bar.empty()
 
@@ -186,21 +184,20 @@ if st.button("開始掃描", type="primary"):
             st.info("無符合條件股票")
 
     # -------------------------------------------------
-    # Excel 匯出（穩定版：openpyxl）
+    # CSV 匯出（最穩定）
     # -------------------------------------------------
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        for k, data in result.items():
-            if data:
-                pd.DataFrame(data).to_excel(
-                    writer,
-                    sheet_name=k[:31],
-                    index=False
-                )
+    rows = []
+    for k, data in result.items():
+        for r in data:
+            rr = r.copy()
+            rr["策略"] = k
+            rows.append(rr)
 
-    st.download_button(
-        "📥 下載掃描結果 Excel",
-        data=output.getvalue(),
-        file_name="stock_scan_result.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+    if rows:
+        df_export = pd.DataFrame(rows)
+        st.download_button(
+            "📥 下載掃描結果 CSV",
+            data=df_export.to_csv(index=False, encoding="utf-8-sig"),
+            file_name="stock_scan_result.csv",
+            mime="text/csv",
+        )
