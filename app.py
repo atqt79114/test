@@ -5,7 +5,6 @@ import ta
 import requests
 import time
 import warnings
-from datetime import date
 
 warnings.filterwarnings("ignore")
 
@@ -17,8 +16,8 @@ st.title("📈 股票策略篩選器（突破+洗盤版）")
 st.markdown("""
 ---
 **策略說明：**
-1.  **盤整突破 (起漲點)**：尋找整理後「帶量突破」前20日高點的股票。
-2.  **爆量回檔 (買綠/洗盤)**：尋找昨日「爆量收黑」，但今日「守住5日線」且尚未大漲的股票。
+1. **日線盤整突破**：均線糾結 → 放量突破壓力 → 收盤站穩。
+2. **爆量回檔洗盤**：強多頭 → 昨日爆量洗盤 → 今日量縮守 MA5。
 ---
 """)
 
@@ -31,15 +30,12 @@ def get_all_tw_tickers():
     tickers = []
     for mode in ["2", "4"]:  # 2=上市, 4=上櫃
         url = f"https://isin.twse.com.tw/isin/C_public.jsp?strMode={mode}"
-        try:
-            r = requests.get(url, headers=headers, verify=False, timeout=10)
-            df = pd.read_html(r.text)[0].iloc[1:]
-            for item in df[0]:
-                code = str(item).split()[0]
-                if code.isdigit() and len(code) == 4:
-                    tickers.append(f"{code}.TW")
-        except Exception as e:
-            st.error(f"抓取股票清單失敗: {e}")
+        r = requests.get(url, headers=headers, verify=False, timeout=10)
+        df = pd.read_html(r.text)[0].iloc[1:]
+        for item in df[0]:
+            code = str(item).split()[0]
+            if code.isdigit() and len(code) == 4:
+                tickers.append(f"{code}.TW")
     return sorted(set(tickers))
 
 # -------------------------------------------------
@@ -47,174 +43,165 @@ def get_all_tw_tickers():
 # -------------------------------------------------
 @st.cache_data(ttl=300)
 def download_daily(ticker):
-    df = yf.download(ticker, period="3mo", interval="1d", progress=False)
-    # 【關鍵修正】扁平化 MultiIndex，解決 ValueError
+    df = yf.download(ticker, period="1y", interval="1d", progress=False)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     return df
 
 # -------------------------------------------------
-# 策略定義
+# 策略一：爆量回檔 / 洗盤低接（含 500 張過濾）
 # -------------------------------------------------
-
-def strategy_consolidation(ticker):
-    """
-    【日線盤整突破（均線糾結版）】
-    均線糾結 → 放量突破壓力 → 收盤站穩
-    """
+def strategy_washout_rebound(ticker):
     try:
         df = download_daily(ticker)
-        if len(df) < 70:
+        if len(df) < 60:
             return None
 
-        close_series = df["Close"]
-        close = float(close_series.iloc[-1])
-        open_price = float(df["Open"].iloc[-1])
-        high = float(df["High"].iloc[-1])
-        low = float(df["Low"].iloc[-1])
+        close = df["Close"]
+        open_p = df["Open"]
+        high = df["High"]
+        low = df["Low"]
         volume = df["Volume"]
 
+        # === 流動性（至少 500 張）===
+        if volume.iloc[-2] < 500_000:
+            return None
+
         # === 均線 ===
-        ma5  = ta.trend.sma_indicator(close_series, 5)
-        ma10 = ta.trend.sma_indicator(close_series, 10)
-        ma20 = ta.trend.sma_indicator(close_series, 20)
-        ma60 = ta.trend.sma_indicator(close_series, 60)
+        ma5  = ta.trend.sma_indicator(close, 5)
+        ma10 = ta.trend.sma_indicator(close, 10)
+        ma20 = ta.trend.sma_indicator(close, 20)
+        ma60 = ta.trend.sma_indicator(close, 60)
 
-        ma5_now  = float(ma5.iloc[-1])
-        ma10_now = float(ma10.iloc[-1])
-        ma20_now = float(ma20.iloc[-1])
-        ma60_now = float(ma60.iloc[-1])
+        # === 昨日 ===
+        c_prev = close.iloc[-2]
+        o_prev = open_p.iloc[-2]
+        h_prev = high.iloc[-2]
+        l_prev = low.iloc[-2]
+        v_prev = volume.iloc[-2]
 
-        # -------------------------------------------------
-        # 條件 1：均線糾結（核心）
-        # -------------------------------------------------
-        ma_spread = (
-            max(ma5_now, ma10_now, ma20_now, ma60_now)
-            - min(ma5_now, ma10_now, ma20_now, ma60_now)
-        ) / close
+        # === 今日 ===
+        c_now = close.iloc[-1]
+        v_now = volume.iloc[-1]
 
-        if ma_spread > 0.03:
+        # 條件 1：多頭結構
+        if not (ma5.iloc[-1] > ma10.iloc[-1] > ma20.iloc[-1] > ma60.iloc[-1]):
             return None
 
-        # -------------------------------------------------
-        # 條件 2：盤整區壓力
-        # -------------------------------------------------
-        resistance = df["High"].iloc[:-1].tail(20).max()
-
-        if close < resistance * 1.005:
+        # 條件 2：昨日爆量洗盤黑 K
+        if c_prev >= o_prev:
             return None
 
-        # -------------------------------------------------
-        # 條件 3：放量但不失控
-        # -------------------------------------------------
         vol_ma5 = volume.rolling(5).mean()
-        if volume.iloc[-1] < vol_ma5.iloc[-2] * 1.5:
+        if v_prev < vol_ma5.iloc[-2] * 1.5:
             return None
 
-        # -------------------------------------------------
-        # 條件 4：收盤站穩（實體夠）
-        # -------------------------------------------------
-        body = abs(close - open_price)
-        range_ = high - low
+        if h_prev == l_prev:
+            return None
 
-        if range_ == 0 or body / range_ < 0.5:
+        lower_shadow = (min(o_prev, c_prev) - l_prev) / (h_prev - l_prev)
+        if lower_shadow < 0.3:
+            return None
+
+        # 條件 3：今日量縮守 MA5
+        if c_now < ma5.iloc[-1]:
+            return None
+
+        if v_now > v_prev * 0.8:
+            return None
+
+        # 條件 4：不追價
+        if (c_now / c_prev - 1) > 0.02:
             return None
 
         return {
             "股票": ticker,
-            "現價": round(close, 2),
+            "現價": round(c_now, 2),
+            "MA5": round(ma5.iloc[-1], 2),
+            "MA10": round(ma10.iloc[-1], 2),
+            "MA20": round(ma20.iloc[-1], 2),
+            "狀態": "爆量洗盤｜量縮守MA5",
+            "昨日量": int(v_prev)
+        }
+
+    except Exception:
+        return None
+
+# -------------------------------------------------
+# 策略二：日線盤整突破（均線糾結＋站穩）
+# -------------------------------------------------
+def strategy_consolidation(ticker):
+    try:
+        df = download_daily(ticker)
+        if len(df) < 260:
+            return None
+
+        close = df["Close"]
+        open_p = df["Open"]
+        high = df["High"]
+        low = df["Low"]
+        volume = df["Volume"]
+
+        # === 流動性 ===
+        if volume.iloc[-1] < 500_000:
+            return None
+
+        # === 均線 ===
+        ma5   = ta.trend.sma_indicator(close, 5)
+        ma10  = ta.trend.sma_indicator(close, 10)
+        ma20  = ta.trend.sma_indicator(close, 20)
+        ma60  = ta.trend.sma_indicator(close, 60)
+        ma240 = ta.trend.sma_indicator(close, 240)
+
+        c_now = close.iloc[-1]
+
+        # 條件 1：長期方向（年線之上）
+        if c_now < ma240.iloc[-1]:
+            return None
+
+        # 條件 2：均線糾結
+        ma_vals = [ma5.iloc[-1], ma10.iloc[-1], ma20.iloc[-1], ma60.iloc[-1]]
+        ma_spread = (max(ma_vals) - min(ma_vals)) / c_now
+        if ma_spread > 0.035:
+            return None
+
+        # 條件 3：盤整壓力突破
+        resistance = high.iloc[:-1].tail(20).max()
+        if c_now < resistance * 1.01:
+            return None
+
+        # 條件 4：放量突破
+        vol_ma5 = volume.rolling(5).mean()
+        if volume.iloc[-1] < vol_ma5.iloc[-2] * 1.5:
+            return None
+
+        # 條件 5：收盤站穩（實體夠）
+        body = abs(c_now - open_p.iloc[-1])
+        rng = high.iloc[-1] - low.iloc[-1]
+        if rng == 0 or body / rng < 0.55:
+            return None
+
+        return {
+            "股票": ticker,
+            "現價": round(c_now, 2),
             "突破壓力": round(resistance, 2),
-            "MA5": round(ma5_now, 2),
-            "MA10": round(ma10_now, 2),
-            "MA20": round(ma20_now, 2),
-            "MA60": round(ma60_now, 2),
+            "MA5": round(ma5.iloc[-1], 2),
+            "MA10": round(ma10.iloc[-1], 2),
+            "MA20": round(ma20.iloc[-1], 2),
+            "MA60": round(ma60.iloc[-1], 2),
+            "MA240": round(ma240.iloc[-1], 2),
             "均線糾結度": f"{round(ma_spread * 100, 2)}%"
         }
 
     except Exception:
         return None
-    return None
 
-def strategy_washout_rebound(ticker):
-    """
-    【爆量回檔洗盤】(買綠不買紅)
-    顯示 MA5 / MA10 / MA20 價位，方便盤中低接判斷
-    """
-    try:
-        df = download_daily(ticker)
-        if len(df) < 30:
-            return None
-
-        # === 取得數據 ===
-        close = df["Close"]
-        open_price = df["Open"]
-        volume = df["Volume"]
-
-        # === 均線 ===
-        ma5 = ta.trend.sma_indicator(close, 5)
-        ma10 = ta.trend.sma_indicator(close, 10)
-        ma20 = ta.trend.sma_indicator(close, 20)
-
-        # === 價量資料 ===
-        c_now = float(close.iloc[-1])
-        c_prev = float(close.iloc[-2])
-        o_prev = float(open_price.iloc[-2])
-
-        v_prev = float(volume.iloc[-2])
-        v_prev_2 = float(volume.iloc[-3])
-
-        ma5_now = float(ma5.iloc[-1])
-        ma10_now = float(ma10.iloc[-1])
-        ma20_now = float(ma20.iloc[-1])
-
-        # -------------------------------------------------
-        # 條件 1：趨勢向上（MA5 > MA10 > MA20）
-        # -------------------------------------------------
-        if not (ma5_now > ma10_now > ma20_now):
-            return None
-
-        # -------------------------------------------------
-        # 條件 2：昨日爆量黑 K
-        # -------------------------------------------------
-        is_black = c_prev < o_prev
-        is_massive = v_prev > v_prev_2 * 1.5
-
-        if not (is_black and is_massive):
-            return None
-
-        # -------------------------------------------------
-        # 條件 3：今日守住 MA5
-        # -------------------------------------------------
-        if c_now < ma5_now:
-            return None
-
-        # -------------------------------------------------
-        # 條件 4：買綠不買紅（避免追高）
-        # -------------------------------------------------
-        pct_change = (c_now / c_prev) - 1
-        if pct_change > 0.02:
-            return None
-
-        # -------------------------------------------------
-        # 回傳結果（含 MA 價位）
-        # -------------------------------------------------
-        return {
-            "股票": ticker,
-            "現價": round(c_now, 2),
-            "MA5": round(ma5_now, 2),
-            "MA10": round(ma10_now, 2),
-            "MA20": round(ma20_now, 2),
-            "狀態": "爆量回檔｜守MA5",
-            "今日漲幅": f"{round(pct_change * 100, 2)}%"
-        }
-
-    except Exception:
-        return None
-    return None
-
+# -------------------------------------------------
+# 策略集合
+# -------------------------------------------------
 STRATEGIES = {
-    "盤整突破 (起漲)": strategy_consolidation,
-    "爆量回檔 (買綠)": strategy_washout_rebound,
+    "盤整突破（均線糾結）": strategy_consolidation,
+    "爆量回檔（洗盤低接）": strategy_washout_rebound,
 }
 
 # -------------------------------------------------
@@ -224,66 +211,50 @@ st.sidebar.header("股票來源")
 source = st.sidebar.radio("選擇", ["手動", "全市場"])
 
 if source == "手動":
-    raw = st.sidebar.text_area("股票代碼", "2330.TW, 2317.TW, 2603.TW, 3231.TW, 2354.TW")
+    raw = st.sidebar.text_area("股票代碼", "2330.TW, 2317.TW, 2603.TW")
     tickers = [x.strip() for x in raw.split(",") if x.strip()]
 else:
     if st.sidebar.button("抓取上市上櫃"):
-        with st.spinner("抓取清單中..."):
-            st.session_state["all"] = get_all_tw_tickers()
-    
+        st.session_state["all"] = get_all_tw_tickers()
     all_tickers = st.session_state.get("all", [])
-    st.sidebar.write(f"清單數量: {len(all_tickers)}")
     scan_limit = st.sidebar.slider("掃描數量限制", 10, 2000, 50)
     tickers = all_tickers[:scan_limit]
 
 st.sidebar.header("策略選擇")
-selected = []
-for k in STRATEGIES:
-    if st.sidebar.checkbox(k, value=True):
-        selected.append(k)
+selected = [k for k in STRATEGIES if st.sidebar.checkbox(k, True)]
 
 # -------------------------------------------------
 # 執行掃描
 # -------------------------------------------------
 if st.button("開始掃描", type="primary"):
-    if not tickers:
-        st.warning("請先輸入代碼或抓取清單")
-    else:
-        result = {k: [] for k in selected}
-        my_bar = st.progress(0, text="掃描進行中...")
-        
-        for i, t in enumerate(tickers):
-            my_bar.progress((i + 1) / len(tickers), text=f"掃描中: {t}")
-            for k in selected:
-                r = STRATEGIES[k](t)
-                if r:
-                    result[k].append(r)
-            time.sleep(0.05)
+    result = {k: [] for k in selected}
+    bar = st.progress(0.0)
 
-        my_bar.empty()
-        st.subheader("📊 掃描結果")
-        
-        has_result = False
-        all_rows = []
-
+    for i, t in enumerate(tickers):
+        bar.progress((i + 1) / len(tickers), text=f"掃描中：{t}")
         for k in selected:
-            if result[k]:
-                has_result = True
-                st.markdown(f"### {k}")
-                st.dataframe(pd.DataFrame(result[k]), use_container_width=True)
-                for row in result[k]:
-                    row["策略"] = k
-                    all_rows.append(row)
+            r = STRATEGIES[k](t)
+            if r:
+                r["策略"] = k
+                result[k].append(r)
+        time.sleep(0.05)
 
-        if not has_result:
-            st.info("無符合條件股票")
+    bar.empty()
+    st.subheader("📊 掃描結果")
 
-        if all_rows:
-            st.markdown("---")
-            df_export = pd.DataFrame(all_rows)
-            st.download_button(
-                "📥 下載 CSV",
-                data=df_export.to_csv(index=False, encoding="utf-8-sig"),
-                file_name="stock_scan_result.csv",
-                mime="text/csv",
-            )
+    all_rows = []
+    for k in result:
+        if result[k]:
+            st.markdown(f"### {k}")
+            st.dataframe(pd.DataFrame(result[k]), use_container_width=True)
+            all_rows.extend(result[k])
+
+    if all_rows:
+        st.download_button(
+            "📥 下載 CSV",
+            pd.DataFrame(all_rows).to_csv(index=False, encoding="utf-8-sig"),
+            "stock_scan_result.csv",
+            "text/csv"
+        )
+    else:
+        st.info("無符合條件股票")
