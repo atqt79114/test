@@ -254,7 +254,7 @@ def strategy_washout_rebound(ticker):
             "狀態": "量縮一半洗盤"
         }
     except Exception:
-        return None Exception:
+        return None
         
 
 # -------------------------------------------------
