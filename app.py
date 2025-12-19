@@ -11,14 +11,16 @@ warnings.filterwarnings("ignore")
 # -------------------------------------------------
 # 頁面設定
 # -------------------------------------------------
-st.set_page_config(page_title="股票策略篩選器（全功能版）", layout="wide")
-st.title("📈 股票策略篩選器（全功能版）")
+st.set_page_config(page_title="股票策略篩選器（極致洗盤版）", layout="wide")
+st.title("📈 股票策略篩選器（極致洗盤版）")
 st.markdown("""
 ---
 **策略邏輯說明：**
-1. **🚀 箱體突破 (追高)**：整理結束，帶量突破箱頂 (MA60>120)。
-2. **🛡️ 箱體底部 (低接)**：股價回測箱型底部 (距離箱底 < 4%)，長線趨勢仍偏多。
-3. **🛁 爆量回檔 (洗盤)**：昨日爆量黑K守MA5，今日量縮續守。
+1. **🚀 高檔箱體突破**：趨勢多頭 (MA60>120) 且位於年線之上，帶量突破箱頂。
+2. **🛡️ 高檔箱體底部**：趨勢多頭 (MA60>120) 且位於年線之上，回測箱底支撐。
+3. **🛁 爆量回檔 (極致洗盤)**：
+   - **前日**：爆量黑K (主力倒貨假象)，但守住 MA5。
+   - **今日**：**量縮一半** (前日量 > 今日量 × 2)，且續守 MA5。
 
 **※ 全策略皆過濾：今日成交量 > 500 張**
 ---
@@ -50,7 +52,7 @@ def get_all_tw_tickers():
 @st.cache_data(ttl=300)
 def download_daily(ticker):
     try:
-        df = yf.download(ticker, period="1y", interval="1d", progress=False)
+        df = yf.download(ticker, period="2y", interval="1d", progress=False)
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         return df
@@ -58,32 +60,33 @@ def download_daily(ticker):
         return pd.DataFrame()
 
 # -------------------------------------------------
-# 策略一：箱體突破 (追強)
+# 策略一：高檔箱體突破 (追強)
 # -------------------------------------------------
 def strategy_box_breakout(ticker):
     try:
         df = download_daily(ticker)
-        if len(df) < 130: return None
+        if len(df) < 250: return None
 
         close = df["Close"]
         volume = df["Volume"]
         high = df["High"]
         low = df["Low"]
 
-        # 1. 流動性過濾 (今日 > 500張)
         vol_today = float(volume.iloc[-1])
         if vol_today < 500_000: return None
 
         ma60  = ta.trend.sma_indicator(close, 60)
         ma120 = ta.trend.sma_indicator(close, 120)
+        ma240 = ta.trend.sma_indicator(close, 240)
 
         c_now = float(close.iloc[-1])
         ma60_now = float(ma60.iloc[-1])
         ma120_now = float(ma120.iloc[-1])
+        ma240_now = float(ma240.iloc[-1])
 
-        # 趨勢：60MA > 120MA
+        # 高檔定義
         if ma60_now <= ma120_now: return None
-        if c_now < ma60_now: return None
+        if c_now < ma240_now: return None
 
         # 箱體計算 (過去 40 天)
         lookback = 40
@@ -93,51 +96,52 @@ def strategy_box_breakout(ticker):
         box_high = float(past_highs.max())
         box_low = float(past_lows.min())
 
-        # 震幅限制 < 25%
         box_amplitude = (box_high - box_low) / box_low
         if box_amplitude > 0.25: return None
 
-        # 突破箱頂
         if c_now <= box_high: return None
 
-        # 帶量
         vol_ma5 = float(volume.rolling(5).mean().iloc[-2])
         if vol_today < vol_ma5 * 1.3: return None
 
         return {
             "股票": ticker,
             "現價": round(c_now, 2),
-            "成交量 (張)": int(vol_today / 1000),  # 新增欄位
+            "成交量 (張)": int(vol_today / 1000),
             "箱頂": round(box_high, 2),
-            "狀態": "突破箱頂 🚀"
+            "狀態": "高檔突破 🚀"
         }
     except Exception:
         return None
 
 # -------------------------------------------------
-# 策略二：箱體底部 (低接)
+# 策略二：高檔箱體底部 (低接)
 # -------------------------------------------------
 def strategy_box_bottom(ticker):
     try:
         df = download_daily(ticker)
-        if len(df) < 130: return None
+        if len(df) < 250: return None
 
         close = df["Close"]
         volume = df["Volume"]
         high = df["High"]
         low = df["Low"]
 
-        # 1. 流動性過濾 (今日 > 500張)
         vol_today = float(volume.iloc[-1])
         if vol_today < 500_000: return None
 
-        # 2. 趨勢：MA60 > MA120
         ma60  = ta.trend.sma_indicator(close, 60)
         ma120 = ta.trend.sma_indicator(close, 120)
+        ma240 = ta.trend.sma_indicator(close, 240)
         
-        if ma60.iloc[-1] <= ma120.iloc[-1]: return None
+        c_now = float(close.iloc[-1])
+        ma60_now = float(ma60.iloc[-1])
+        ma120_now = float(ma120.iloc[-1])
+        ma240_now = float(ma240.iloc[-1])
+        
+        if ma60_now <= ma120_now: return None
+        if c_now < ma240_now: return None
 
-        # 3. 箱體計算
         lookback = 40
         past_highs = high.iloc[-lookback:]
         past_lows = low.iloc[-lookback:]
@@ -145,22 +149,19 @@ def strategy_box_bottom(ticker):
         box_high = float(past_highs.max())
         box_low = float(past_lows.min())
 
-        # 4. 震幅限制
         box_amplitude = (box_high - box_low) / box_low
         if box_amplitude > 0.25: return None
 
-        # 5. 位置判定：接近箱底
-        c_now = float(close.iloc[-1])
         distance_from_low = (c_now - box_low) / box_low
         
         if distance_from_low <= 0.04 and distance_from_low >= -0.02:
             return {
                 "股票": ticker,
                 "現價": round(c_now, 2),
-                "成交量 (張)": int(vol_today / 1000),  # 新增欄位
+                "成交量 (張)": int(vol_today / 1000),
                 "箱底": round(box_low, 2),
                 "距離箱底": f"{round(distance_from_low * 100, 1)}%",
-                "狀態": "回測箱底 🛡️"
+                "狀態": "高檔回測箱底 🛡️"
             }
         else:
             return None
@@ -169,7 +170,7 @@ def strategy_box_bottom(ticker):
         return None
 
 # -------------------------------------------------
-# 策略三：爆量回檔 (洗盤)
+# 策略三：爆量回檔 (洗盤) - 修正版
 # -------------------------------------------------
 def strategy_washout_rebound(ticker):
     try:
@@ -179,7 +180,6 @@ def strategy_washout_rebound(ticker):
         open_p = df["Open"]
         volume = df["Volume"]
 
-        # 1. 流動性過濾 (今日 > 500張，確保想賣賣得掉)
         vol_today = float(volume.iloc[-1])
         if vol_today < 500_000: return None
 
@@ -189,10 +189,13 @@ def strategy_washout_rebound(ticker):
         ma60  = ta.trend.sma_indicator(close, 60)
         ma120 = ta.trend.sma_indicator(close, 120)
 
+        # 昨日數據
         c_prev = float(close.iloc[-2])
         o_prev = float(open_p.iloc[-2])
         v_prev = float(volume.iloc[-2])
         ma5_prev = float(ma5.iloc[-2])
+        
+        # 今日數據
         c_now = float(close.iloc[-1])
         ma5_now = float(ma5.iloc[-1])
         
@@ -201,23 +204,29 @@ def strategy_washout_rebound(ticker):
         ma60_now  = float(ma60.iloc[-1])
         ma120_now = float(ma120.iloc[-1])
 
-        # 條件：昨日爆量黑K守MA5
-        if c_prev >= o_prev: return None
+        # 條件 A：前日是爆量黑K
+        if c_prev >= o_prev: return None  # 必須是黑K
+        
         vol_ma5_prev = float(volume.rolling(5).mean().iloc[-2])
-        if v_prev < vol_ma5_prev * 1.1: return None
-        if c_prev < ma5_prev: return None
+        if v_prev < vol_ma5_prev * 1.5: return None # 爆量
+        
+        if c_prev < ma5_prev: return None # 守住MA5
 
-        # 條件：今日續守MA5 + 多頭排列 + 量縮
+        # 條件 B：今日量縮一半 & 續守MA5
         if c_now < ma5_now: return None
+        
+        # 【關鍵修正】前日量 要大於 今日量的0.2倍 (即 v_prev > 2 * v_today)
+        if v_prev <= vol_today * 1.2: return None
+
+        # 條件 C：多頭排列
         if not (ma10_now > ma20_now > ma60_now > ma120_now): return None
-        if vol_today >= v_prev: return None
 
         return {
             "股票": ticker,
             "現價": round(c_now, 2),
-            "成交量 (張)": int(vol_today / 1000),  # 新增欄位
-            "MA5": round(ma5_now, 2),
-            "狀態": "洗盤量縮"
+            "成交量 (張)": int(vol_today / 1000),
+            "前日量 (張)": int(v_prev / 1000), # 顯示出來比對
+            "狀態": "量縮一半洗盤"
         }
     except Exception:
         return None
@@ -226,9 +235,9 @@ def strategy_washout_rebound(ticker):
 # 策略集合
 # -------------------------------------------------
 STRATEGIES = {
-    "🚀 箱體突破 (追高)": strategy_box_breakout,
-    "🛡️ 箱體底部 (低接)": strategy_box_bottom,
-    "🛁 爆量回檔 (洗盤)": strategy_washout_rebound,
+    "🚀 高檔箱體突破 (MA60>120)": strategy_box_breakout,
+    "🛡️ 高檔箱體底部 (MA60>120)": strategy_box_bottom,
+    "🛁 爆量回檔 (洗盤-量縮一半)": strategy_washout_rebound,
 }
 
 # -------------------------------------------------
