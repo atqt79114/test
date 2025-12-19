@@ -11,8 +11,8 @@ warnings.filterwarnings("ignore")
 # -------------------------------------------------
 # 頁面設定
 # -------------------------------------------------
-st.set_page_config(page_title="股票策略篩選器（完美多頭版）", layout="wide")
-st.title("📈 股票策略篩選器（完美多頭版）")
+st.set_page_config(page_title="股票策略篩選器（實戰修正版）", layout="wide")
+st.title("📈 股票策略篩選器（實戰修正版）")
 
 st.markdown("""
 ---
@@ -28,8 +28,8 @@ st.markdown("""
 
 3. 🛁 **爆量回檔（洗盤）**
    - **完美多頭排列 (5 > 10 > 20 > 60 > 120)**
-   - 昨日出量黑K + 守住 MA5
-   - 今日量縮 (縮20%以上) + 續守 MA5
+   - **昨日**：出量黑K (**量 > 前日**) + 守住 MA5
+   - **今日**：量縮 (**量 < 昨日**) + 續守 MA5
 
 4. 📦 **盤整突破 (均線糾結)**
    - 均線糾結 + 帶量突破 20日高點
@@ -184,7 +184,7 @@ def strategy_smc_support(ticker):
         return None
 
 # -------------------------------------------------
-# 策略三：爆量回檔（洗盤）- 完美多頭版
+# 策略三：爆量回檔（洗盤）- 修正成交量條件
 # -------------------------------------------------
 def strategy_washout_rebound(ticker):
     try:
@@ -204,7 +204,7 @@ def strategy_washout_rebound(ticker):
         ma60 = ta.trend.sma_indicator(close, 60)
         ma120 = ta.trend.sma_indicator(close, 120)
 
-        # 變數準備
+        # 變數準備 (T=今日, T-1=昨日, T-2=前日)
         c_prev = close.iloc[-2]
         o_prev = open_p.iloc[-2]
         v_prev = float(volume.iloc[-2])
@@ -218,16 +218,24 @@ def strategy_washout_rebound(ticker):
         ma120_now = float(ma120.iloc[-1])
 
         # === 條件 A: 昨日出量黑K 且 守住MA5 ===
-        if c_prev >= o_prev: return None # 必須黑K
-        if v_prev <= v_prev_2: return None # 有出量
-        if c_prev < ma5.iloc[-2]: return None # 昨收要守 MA5
+        # 1. 必須是黑K
+        if c_prev >= o_prev: return None 
+        
+        # 2. 【修正】昨日量 > 前日量 (只要有增量即可)
+        if v_prev <= v_prev_2: return None 
+        
+        # 3. 昨收要守 MA5
+        if c_prev < ma5.iloc[-2]: return None 
 
         # === 條件 B: 今日量縮 且 續守MA5 ===
-        if c_now < ma5_now: return None # 今收要守 MA5
-        if vol_today >= v_prev * 0.8: return None # 量縮20%以上
+        # 1. 今收要守 MA5
+        if c_now < ma5_now: return None 
+        
+        # 2. 【修正】今日量 < 昨日量 (只要量縮即可)
+        if vol_today >= v_prev: return None 
 
-        # === 條件 C: 完美多頭排列 (您指定的條件) ===
-        # 5MA > 10MA > 20MA > 60MA > 120MA
+        # === 條件 C: 完美多頭排列 ===
+        # 5 > 10 > 20 > 60 > 120
         if not (ma5_now > ma10_now > ma20_now > ma60_now > ma120_now):
             return None
 
@@ -235,8 +243,9 @@ def strategy_washout_rebound(ticker):
             "股票": ticker,
             "現價": round(c_now, 2),
             "成交量(千)": int(vol_today / 1000),
+            "昨日量(千)": int(v_prev / 1000),
             "縮量比": f"{round((vol_today/v_prev)*100, 1)}%",
-            "狀態": "完美多頭洗盤 🛁"
+            "狀態": "增量黑K後量縮 🛁"
         }
     except Exception:
         return None
