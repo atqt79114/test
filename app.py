@@ -57,9 +57,7 @@ def download_daily(ticker):
         return pd.DataFrame()
 
 # -------------------------------------------------
-# 策略一：爆量回檔 / 洗盤低接 (修正版)
-# -------------------------------------------------
-# 策略一：爆量回檔 / 洗盤低接 (修正版：加入今日下影線 + 嚴守MA5)
+# 策略一：爆量回檔 / 洗盤低接 (簡化版：量縮 + 嚴守MA5)
 # -------------------------------------------------
 import pandas as pd
 import ta
@@ -73,9 +71,7 @@ def strategy_washout_rebound(ticker):
         close = df["Close"]
         open_p = df["Open"]
         volume = df["Volume"]
-        low_p = df["Low"]   # 新增：為了計算下影線
-        high_p = df["High"] # 新增
-
+        
         # === 流動性過濾 ===
         if volume.iloc[-2] < 500_000: return None # 昨天至少500張
 
@@ -94,8 +90,6 @@ def strategy_washout_rebound(ticker):
         
         # === 今日數據 (T) ===
         c_now = float(close.iloc[-1])
-        o_now = float(open_p.iloc[-1]) # 用於計算K棒實體
-        l_now = float(low_p.iloc[-1])  # 用於計算最低價
         v_now = float(volume.iloc[-1])
         
         # 均線數值 (今日)
@@ -115,36 +109,23 @@ def strategy_washout_rebound(ticker):
         vol_ma5_prev = float(volume.rolling(5).mean().iloc[-2])
         if v_prev < vol_ma5_prev * 1.5: return None
 
-        # 1-3. 守住 5 日線 (昨收還在MA5之上)
+        # 1-3. 守住 5 日線 (昨日還在MA5之上，確認不是真崩盤)
         if c_prev < ma5_prev: return None
 
         # ---------------------------------------------------------
-        # 條件 2：今日狀態 (多頭排列 + 量縮 + 下影線 + 站穩MA5)
+        # 條件 2：今日狀態 (多頭排列 + 量縮 + 站穩MA5)
         # ---------------------------------------------------------
         # 2-1. 嚴格均線排列 (10 > 20 > 60 > 120)
+        # 確保大趨勢是向上的
         if not (ma10_now > ma20_now > ma60_now > ma120_now):
             return None
 
         # 2-2. 今日量縮 (比昨天爆量少，代表賣壓減輕)
         if v_now >= v_prev: return None
 
-        # 2-3. 【關鍵修改】嚴守 5日線 (好防守)
-        # 今日收盤價必須 >= 5日均線
+        # 2-3. 【關鍵防守】嚴守 5日線
+        # 只要今天收盤價 >= 5日均線，就符合
         if c_now < ma5_now: return None
-
-        # 2-4. 【新增】今日出現下影線 (代表低檔有買盤支撐)
-        # 計算：下影線長度 = (實體底部) - 最低價
-        # 實體底部 = min(開盤, 收盤)
-        lower_shadow = min(c_now, o_now) - l_now
-        body_len = abs(c_now - o_now)
-        
-        # 判定標準：
-        # 如果是十字星(實體幾乎為0)，只要有下影線就算過
-        # 如果有實體，下影線長度必須 > 實體長度的 0.5 倍 (可自行調整 0.3 或 1.0)
-        if body_len == 0:
-             if lower_shadow == 0: return None
-        elif lower_shadow < (body_len * 0.5): 
-             return None
 
         return {
             "股票": ticker,
@@ -152,11 +133,10 @@ def strategy_washout_rebound(ticker):
             "昨日狀態": "爆量黑K",
             "均線狀態": "多頭排列",
             "MA5": round(ma5_now, 2),
-            "訊號": "量縮回穩+下影線"
+            "訊號": "量縮且站穩MA5"
         }
 
     except Exception as e:
-        # print(f"Error analyzing {ticker}: {e}")
         return None
    
 
