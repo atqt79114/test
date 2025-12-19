@@ -103,7 +103,7 @@ def strategy_washout_rebound(ticker):
         
         # A-2. 爆量 (昨日量 > 5日均量 * 1.5)
         vol_ma5_prev = float(volume.rolling(5).mean().iloc[-2])
-        if v_prev < vol_ma5_prev * 1.5: return None
+        if v_prev < vol_ma5_prev * 1.2: return None
 
         # A-3. 昨日守住 5 日線
         if c_prev < ma5_prev: return None
