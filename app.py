@@ -196,65 +196,94 @@ def strategy_smc_support(ticker):
 def strategy_washout_rebound(ticker):
     try:
         df = download_daily(ticker)
-        if len(df) < 125: return None
+        if len(df) < 125:
+            return None
+
         close = df["Close"]
         open_p = df["Open"]
         volume = df["Volume"]
 
+        # === 今日量能基本門檻（避免小量股）===
         vol_today = float(volume.iloc[-1])
-        if vol_today < 500_000: return None
+        MIN_VOL = 500_000  # 假設單位為「股」，約 500 張
+        if vol_today < MIN_VOL:
+            return None
 
+        # === 均線 ===
         ma5   = ta.trend.sma_indicator(close, 5)
         ma10  = ta.trend.sma_indicator(close, 10)
         ma20  = ta.trend.sma_indicator(close, 20)
         ma60  = ta.trend.sma_indicator(close, 60)
         ma120 = ta.trend.sma_indicator(close, 120)
 
-        # 變數定義
+        # === 昨日 / 前日 ===
         c_prev = float(close.iloc[-2])
         o_prev = float(open_p.iloc[-2])
         v_prev = float(volume.iloc[-2])
         v_prev_2 = float(volume.iloc[-3])
         ma5_prev = float(ma5.iloc[-2])
-        
+
+        # === 今日 ===
         c_now = float(close.iloc[-1])
         ma5_now = float(ma5.iloc[-1])
-        
+
         ma10_now = float(ma10.iloc[-1])
         ma20_now = float(ma20.iloc[-1])
         ma60_now = float(ma60.iloc[-1])
         ma120_now = float(ma120.iloc[-1])
 
-        # === 條件 A：昨日爆量黑K ===
-        # 1. 必須是黑K
-        if c_prev >= o_prev: return None
-        
-        # 2. [調整] 昨日量 > 前天量 * 1.1 (從 1.2 下修為 1.1，稍微放寬)
-        if v_prev <= v_prev_2 * 1.1: return None
-        
-        # 3. 守住 MA5
-        if c_prev < ma5_prev: return None
+        # =================================================
+        # 條件 A：昨日「爆量洗盤黑K」
+        # =================================================
 
-        # === 條件 B：今日量縮 & 續守MA5 ===
-        # 1. 續守 MA5
-        if c_now < ma5_now: return None
-        
-        # 2. [調整] 今日量 < 昨日量 * 0.5 (從 0.4 放寬為 0.5，量縮一半)
-        if vol_today >= v_prev * 0.5: return None
+        # 1. 昨日必須是黑K
+        if c_prev >= o_prev:
+            return None
 
-        # === 條件 C：多頭排列 ===
-        if not (ma10_now > ma20_now > ma60_now > ma120_now): return None
+        # 2. 昨日量需明顯放大（較前日）
+        if v_prev <= v_prev_2 * 1.1:
+            return None
 
+        # 3. 昨日收盤「大致守住 MA5」（允許洗盤誤差 0.5%）
+        if c_prev < ma5_prev * 0.995:
+            return None
+
+        # =================================================
+        # 條件 B：今日量縮確認 + 續守 MA5
+        # =================================================
+
+        # 1. 今日仍守 MA5
+        if c_now < ma5_now:
+            return None
+
+        # 2. 今日量縮比例（關鍵）
+        shrink_ratio = vol_today / v_prev
+
+        # 今日量需 <= 昨日 0.6 倍（量能明顯冷卻）
+        if shrink_ratio > 0.6:
+            return None
+
+        # =================================================
+        # 條件 C：中期多頭排列（提高勝率）
+        # =================================================
+        if not (ma10_now > ma20_now > ma60_now > ma120_now):
+            return None
+
+        # =================================================
+        # 通過條件，回傳結果
+        # =================================================
         return {
             "股票": ticker,
             "現價": round(c_now, 2),
-            "成交量": int(vol_today / 1000),
-            "昨日量": int(v_prev / 1000),
-            "縮量比例": f"{round((vol_today/v_prev)*100, 1)}%", # 顯示出來讓你參考
-            "狀態": "量縮一半洗盤"
+            "成交量(千)": int(vol_today / 1000),
+            "昨日量(千)": int(v_prev / 1000),
+            "量縮比例": f"{round(shrink_ratio * 100, 1)}%",
+            "狀態": "洗盤後量縮確認"
         }
+
     except Exception:
         return None
+
         
 
 # -------------------------------------------------
