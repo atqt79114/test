@@ -11,22 +11,23 @@ warnings.filterwarnings("ignore")
 # -------------------------------------------------
 # 頁面設定
 # -------------------------------------------------
-st.set_page_config(page_title="股票策略篩選器（SMC 結構版）", layout="wide")
-st.title("📈 股票策略篩選器（SMC 結構版）")
+st.set_page_config(page_title="股票策略篩選器（良辰吉時）", layout="wide")
+st.title("📈 股票策略篩選器（良辰吉時）")
 st.markdown("""
 ---
-**策略邏輯說明 (SMC 思維結合均線)：**
+**策略邏輯說明：**
 
-1.  **💎 SMC 箱體突破 (BOS)**：
-    * **結構**：均線 (5/10/20/60) 糾結代表主力吸籌 (Accumulation)。
-    * **趨勢**：MA60 > MA120 (長線多頭)。
-    * **訊號**：收盤價突破 **壓力區 (BSL)**，且爆量。
+1.  **🚀 SMC 箱體突破 (壓力/支撐)**：
+    * 趨勢：MA60 > MA120。
+    * 訊號：今日 **倍量** (量>昨日2倍) 突破箱體壓力 (BSL)。
     
-2.  **🛡️ SMC 訂單塊回測 (Return to OB)**：
-    * **結構**：均線糾結，股價回到 **支撐區 (Order Block)**。
-    * **訊號**：低接布局，防守糾結區的最低點。
+2.  **🛡️ SMC 回測支撐 (低接)**：
+    * 趨勢：MA60 > MA120。
+    * 訊號：回測箱體支撐 (OB)，均線糾結不發散。
 
-3.  **🛁 爆量回檔 (洗盤)**：量縮一半守 MA5。
+3.  **🛁 爆量回檔 (極致洗盤)**：
+    * **昨日**：爆量黑K守MA5 (量 > 前日20%)。
+    * **今日**：**窒息量縮** (量 < 昨日40%) 且續守MA5。
 
 **※ 全策略皆過濾：今日成交量 > 500 張**
 ---
@@ -66,7 +67,7 @@ def download_daily(ticker):
         return pd.DataFrame()
 
 # -------------------------------------------------
-# 策略一：SMC 箱體突破 (Break of Structure)
+# 策略一：SMC 箱體突破 (追強 - 倍量)
 # -------------------------------------------------
 def strategy_smc_breakout(ticker):
     try:
@@ -78,66 +79,54 @@ def strategy_smc_breakout(ticker):
         high = df["High"]
         low = df["Low"]
 
-        # 1. 流動性過濾
         vol_today = float(volume.iloc[-1])
         if vol_today < 500_000: return None
 
-        # 2. 計算均線
-        ma5   = ta.trend.sma_indicator(close, 5)
-        ma10  = ta.trend.sma_indicator(close, 10)
-        ma20  = ta.trend.sma_indicator(close, 20)
         ma60  = ta.trend.sma_indicator(close, 60)
         ma120 = ta.trend.sma_indicator(close, 120)
+        ma240 = ta.trend.sma_indicator(close, 240)
 
         c_now = float(close.iloc[-1])
         ma60_now = float(ma60.iloc[-1])
         ma120_now = float(ma120.iloc[-1])
+        ma240_now = float(ma240.iloc[-1])
 
-        # === 條件 A：趨勢濾網 (MA60 > MA120) ===
+        # 高檔趨勢
         if ma60_now <= ma120_now: return None
-        
-        # === 條件 B：SMC 結構定義 (均線糾結區) ===
-        # 我們檢查過去 40 天內，是否有發生「均線糾結」
-        # 這裡用 (MA5, MA10, MA20, MA60) 的乖離率來定義「吸籌區」
-        
-        # 過去 40 天的高低點 (作為 BSL 和 SSL)
+        if c_now < ma240_now: return None
+
+        # SMC 結構
         lookback = 40
         past_highs = high.iloc[-lookback-1:-1]
         past_lows = low.iloc[-lookback-1:-1]
         
-        # 定義 SMC 關鍵位
-        # 壓力 (BSL): 過去這段整理期間的最高價
-        # 支撐 (OB/SSL): 過去這段整理期間的最低價
         resistance_bsl = float(past_highs.max())
         support_ssl = float(past_lows.min())
 
-        # 檢查糾結度 (Consolidation)
-        # 如果箱子太寬 (例如震幅 > 30%)，代表不是吸籌，是盤整或出貨
         amplitude = (resistance_bsl - support_ssl) / support_ssl
         if amplitude > 0.30: return None
 
-        # === 條件 C：突破 (BOS - Break of Structure) ===
-        # 1. 收盤價突破壓力區
+        # 突破 BSL
         if c_now <= resistance_bsl: return None
         
-        # 2. 倍量攻擊 (Confirmation)
+        # 倍量確認 (今日 > 昨日 * 2)
         vol_prev = float(volume.iloc[-2])
         if vol_today <= vol_prev * 2: return None
 
         return {
             "股票": ticker,
             "現價": round(c_now, 2),
-            "壓力 (BSL)": round(resistance_bsl, 2), # 突破了這個價位
-            "支撐 (OB)": round(support_ssl, 2),     # 萬一跌破這裡要停損
+            "壓力 (BSL)": round(resistance_bsl, 2),
+            "支撐 (OB)": round(support_ssl, 2),
             "成交量": int(vol_today / 1000),
-            "型態": "SMC 結構突破"
+            "狀態": "倍量突破 🚀"
         }
 
     except Exception:
         return None
 
 # -------------------------------------------------
-# 策略二：SMC 訂單塊回測 (Return to Order Block)
+# 策略二：SMC 回測支撐 (低接)
 # -------------------------------------------------
 def strategy_smc_support(ticker):
     try:
@@ -154,17 +143,18 @@ def strategy_smc_support(ticker):
 
         ma60  = ta.trend.sma_indicator(close, 60)
         ma120 = ta.trend.sma_indicator(close, 120)
+        ma240 = ta.trend.sma_indicator(close, 240)
         
         c_now = float(close.iloc[-1])
         ma60_now = float(ma60.iloc[-1])
         ma120_now = float(ma120.iloc[-1])
+        ma240_now = float(ma240.iloc[-1])
 
-        # 趨勢：MA60 > MA120
         if ma60_now <= ma120_now: return None
+        if c_now < ma240_now: return None
 
-        # SMC 結構定義
         lookback = 40
-        past_highs = high.iloc[-lookback:] # 含今日
+        past_highs = high.iloc[-lookback:]
         past_lows = low.iloc[-lookback:]
         
         resistance_bsl = float(past_highs.max())
@@ -173,14 +163,9 @@ def strategy_smc_support(ticker):
         amplitude = (resistance_bsl - support_ssl) / support_ssl
         if amplitude > 0.30: return None
 
-        # === 條件：回測支撐 (Mitigation) ===
-        # 股價距離「支撐 (SSL)」很近 (< 5%)
         distance_from_support = (c_now - support_ssl) / support_ssl
         
-        # 在支撐附近，且沒有跌破支撐超過 2% (掃停損可以，但實體不能破太遠)
         if distance_from_support <= 0.05 and distance_from_support >= -0.02:
-            
-            # 額外確認：均線必須有糾結跡象 (5/10/20/60 彼此靠近)
             ma_values = [
                 float(ta.trend.sma_indicator(close, 5).iloc[-1]),
                 float(ta.trend.sma_indicator(close, 10).iloc[-1]),
@@ -188,18 +173,16 @@ def strategy_smc_support(ticker):
                 float(ma60_now)
             ]
             ma_spread = (max(ma_values) - min(ma_values)) / min(ma_values)
-            
-            # 如果均線發散太嚴重(>10%)，代表不是糾結底，可能是下跌中繼
             if ma_spread > 0.10: return None
 
             return {
                 "股票": ticker,
                 "現價": round(c_now, 2),
-                "壓力 (BSL)": round(resistance_bsl, 2), # 目標價
-                "支撐 (OB)": round(support_ssl, 2),     # 買進防守價
+                "壓力 (BSL)": round(resistance_bsl, 2),
+                "支撐 (OB)": round(support_ssl, 2),
                 "距離支撐": f"{round(distance_from_support*100, 1)}%",
                 "成交量": int(vol_today / 1000),
-                "型態": "SMC 回測支撐"
+                "狀態": "回測支撐 🛡️"
             }
         else:
             return None
@@ -208,7 +191,7 @@ def strategy_smc_support(ticker):
         return None
 
 # -------------------------------------------------
-# 策略三：爆量回檔 (洗盤) - 保持不變
+# 策略三：爆量回檔 (洗盤) - 窒息量修正版
 # -------------------------------------------------
 def strategy_washout_rebound(ticker):
     try:
@@ -227,11 +210,16 @@ def strategy_washout_rebound(ticker):
         ma60  = ta.trend.sma_indicator(close, 60)
         ma120 = ta.trend.sma_indicator(close, 120)
 
-        c_prev = float(close.iloc[-2])
-        o_prev = float(open_p.iloc[-2])
-        v_prev = float(volume.iloc[-2])
+        # 變數定義 (T=Today, T_1=Yesterday, T_2=Day before Yesterday)
+        c_prev = float(close.iloc[-2])   # 昨日收盤
+        o_prev = float(open_p.iloc[-2])  # 昨日開盤
+        
+        v_prev = float(volume.iloc[-2])  # 昨日量
+        v_prev_2 = float(volume.iloc[-3]) # 前日量 (T-2)
+
         ma5_prev = float(ma5.iloc[-2])
-        c_now = float(close.iloc[-1])
+        
+        c_now = float(close.iloc[-1])    # 今日收盤
         ma5_now = float(ma5.iloc[-1])
         
         ma10_now = float(ma10.iloc[-1])
@@ -239,20 +227,33 @@ def strategy_washout_rebound(ticker):
         ma60_now = float(ma60.iloc[-1])
         ma120_now = float(ma120.iloc[-1])
 
+        # === 條件 A：昨日爆量黑K (相較於前天) ===
+        # 1. 必須是黑K
         if c_prev >= o_prev: return None
-        vol_ma5_prev = float(volume.rolling(5).mean().iloc[-2])
-        if v_prev < vol_ma5_prev * 1.5: return None
+        
+        # 2. 昨日量 > 前天量 * 1.2 (增加 20%)
+        if v_prev <= v_prev_2 * 1.2: return None
+        
+        # 3. 守住 MA5
         if c_prev < ma5_prev: return None
+
+        # === 條件 B：今日窒息量縮 & 續守MA5 ===
+        # 1. 續守 MA5
         if c_now < ma5_now: return None
-        if v_prev <= vol_today * 2: return None
+        
+        # 2. 今日量 < 昨日量 * 0.4 (量縮至 40% 以下)
+        if vol_today >= v_prev * 0.4: return None
+
+        # === 條件 C：多頭排列 ===
         if not (ma10_now > ma20_now > ma60_now > ma120_now): return None
 
         return {
             "股票": ticker,
             "現價": round(c_now, 2),
             "成交量": int(vol_today / 1000),
-            "MA5": round(ma5_now, 2),
-            "狀態": "量縮洗盤"
+            "昨日量": int(v_prev / 1000),
+            "前日量": int(v_prev_2 / 1000), # 顯示出來驗證增加幅度
+            "狀態": "窒息量洗盤"
         }
     except Exception:
         return None
@@ -261,9 +262,9 @@ def strategy_washout_rebound(ticker):
 # 策略集合
 # -------------------------------------------------
 STRATEGIES = {
-    "💎 SMC 箱體突破 (壓力/支撐)": strategy_smc_breakout,
-    "🛡️ SMC 回測支撐 (壓力/支撐)": strategy_smc_support,
-    "🛁 爆量回檔 (洗盤)": strategy_washout_rebound,
+    "💎 SMC 箱體突破 (倍量攻擊)": strategy_smc_breakout,
+    "🛡️ SMC 回測支撐 (低接布局)": strategy_smc_support,
+    "🛁 爆量回檔 (窒息量洗盤)": strategy_washout_rebound,
 }
 
 # -------------------------------------------------
@@ -316,7 +317,6 @@ if st.button("開始掃描", type="primary"):
             if result[k]:
                 has_data = True
                 st.markdown(f"### {k}")
-                # 顯示資料，包含壓力與支撐欄位
                 st.dataframe(pd.DataFrame(result[k]), use_container_width=True)
                 all_rows.extend(result[k])
 
