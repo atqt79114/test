@@ -189,97 +189,56 @@ def strategy_smc_support(ticker):
             return None
 
     except Exception:
-        return None
-
 # -------------------------------------------------
-# 策略三：爆量回檔 (洗盤) - 實戰量縮版
+# 策略三：爆量回檔 (洗盤) - 保持不變
 # -------------------------------------------------
 def strategy_washout_rebound(ticker):
     try:
         df = download_daily(ticker)
-        # 必須要有足夠資料計算 120MA
         if len(df) < 125: return None
-
         close = df["Close"]
         open_p = df["Open"]
         volume = df["Volume"]
 
-        # 1. 基礎門檻：今日成交量 > 500 張
         vol_today = float(volume.iloc[-1])
         if vol_today < 500_000: return None
 
-        # 2. 計算指標
-        ma5 = ta.trend.sma_indicator(close, 5)
-        ma20 = ta.trend.sma_indicator(close, 20)
-        ma60 = ta.trend.sma_indicator(close, 60)
+        ma5   = ta.trend.sma_indicator(close, 5)
+        ma10  = ta.trend.sma_indicator(close, 10)
+        ma20  = ta.trend.sma_indicator(close, 20)
+        ma60  = ta.trend.sma_indicator(close, 60)
         ma120 = ta.trend.sma_indicator(close, 120)
-        
-        # 取值 (T=Today, T_1=Yesterday)
+
         c_prev = float(close.iloc[-2])
         o_prev = float(open_p.iloc[-2])
         v_prev = float(volume.iloc[-2])
         ma5_prev = float(ma5.iloc[-2])
-
         c_now = float(close.iloc[-1])
         ma5_now = float(ma5.iloc[-1])
         
+        ma10_now = float(ma10.iloc[-1])
         ma20_now = float(ma20.iloc[-1])
         ma60_now = float(ma60.iloc[-1])
         ma120_now = float(ma120.iloc[-1])
 
-        # ==========================================
-        # 條件 A：長線保護 (多頭趨勢)
-        # ==========================================
-        # 1. 股價必須在 120MA (半年線) 之上
-        if c_now < ma120_now: return None
-
-        # 2. 均線多頭排列 (生命線 > 季線 > 半年線)
-        if not (ma20_now > ma60_now > ma120_now):
-            return None
-            
-        # 3. 股價要在 20MA (月線) 之上
-        if c_now < ma20_now: return None
-
-        # ==========================================
-        # 條件 B：昨日「出量黑K 守 5MA」
-        # ==========================================
-        
-        # 1. 必須是黑K
         if c_prev >= o_prev: return None
-
-        # 2. 昨日量 > 前日量 (有出量即可)
-        v_prev_2 = float(volume.iloc[-3])
-        if v_prev <= v_prev_2: 
-            return None
-
-        # 3. 昨日守住 MA5
+        vol_ma5_prev = float(volume.rolling(5).mean().iloc[-2])
+        if v_prev < vol_ma5_prev * 1.5: return None
         if c_prev < ma5_prev: return None
-
-        # ==========================================
-        # 條件 C：今日「量縮 續守 5MA」
-        # ==========================================
-
-        # 1. 今日繼續守住 MA5 (關鍵)
         if c_now < ma5_now: return None
-
-        # 2. 【關鍵修正】量縮確認：今日量 < 昨日量 * 0.8
-        #    這代表量縮了至少 20% (不用縮到一半)
-        #    這符合您要求的 "小於昨日的 20-40%" 範圍 (縮量20%~40%都算在內)
-        shrink_ratio = vol_today / v_prev
-        if shrink_ratio > 0.8: return None
+        if v_prev <= vol_today * 2: return None
+        if not (ma10_now > ma20_now > ma60_now > ma120_now): return None
 
         return {
             "股票": ticker,
             "現價": round(c_now, 2),
-            "成交量(張)": int(vol_today / 1000),
-            "昨日量(張)": int(v_prev / 1000),
-            "量縮比例": f"{round(shrink_ratio * 100, 1)}%",
+            "成交量": int(vol_today / 1000),
             "MA5": round(ma5_now, 2),
-            "狀態": "5MA上量縮洗盤(縮>20%)"
+            "狀態": "量縮洗盤"
         }
-
     except Exception:
         return None
+
 
 # -------------------------------------------------
 # 策略集合
