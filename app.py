@@ -191,7 +191,7 @@ def strategy_smc_support(ticker):
         return None
 
 # -------------------------------------------------
-# 策略三：爆量回檔 (洗盤) - 窒息量修正版
+# 策略三：爆量回檔 (洗盤) - 參數優化版
 # -------------------------------------------------
 def strategy_washout_rebound(ticker):
     try:
@@ -210,16 +210,14 @@ def strategy_washout_rebound(ticker):
         ma60  = ta.trend.sma_indicator(close, 60)
         ma120 = ta.trend.sma_indicator(close, 120)
 
-        # 變數定義 (T=Today, T_1=Yesterday, T_2=Day before Yesterday)
-        c_prev = float(close.iloc[-2])   # 昨日收盤
-        o_prev = float(open_p.iloc[-2])  # 昨日開盤
-        
-        v_prev = float(volume.iloc[-2])  # 昨日量
-        v_prev_2 = float(volume.iloc[-3]) # 前日量 (T-2)
-
+        # 變數定義
+        c_prev = float(close.iloc[-2])
+        o_prev = float(open_p.iloc[-2])
+        v_prev = float(volume.iloc[-2])
+        v_prev_2 = float(volume.iloc[-3])
         ma5_prev = float(ma5.iloc[-2])
         
-        c_now = float(close.iloc[-1])    # 今日收盤
+        c_now = float(close.iloc[-1])
         ma5_now = float(ma5.iloc[-1])
         
         ma10_now = float(ma10.iloc[-1])
@@ -227,22 +225,22 @@ def strategy_washout_rebound(ticker):
         ma60_now = float(ma60.iloc[-1])
         ma120_now = float(ma120.iloc[-1])
 
-        # === 條件 A：昨日爆量黑K (相較於前天) ===
+        # === 條件 A：昨日爆量黑K ===
         # 1. 必須是黑K
         if c_prev >= o_prev: return None
         
-        # 2. 昨日量 > 前天量 * 1.2 (增加 20%)
-        if v_prev <= v_prev_2 * 1.2: return None
+        # 2. [調整] 昨日量 > 前天量 * 1.1 (從 1.2 下修為 1.1，稍微放寬)
+        if v_prev <= v_prev_2 * 1.1: return None
         
         # 3. 守住 MA5
         if c_prev < ma5_prev: return None
 
-        # === 條件 B：今日窒息量縮 & 續守MA5 ===
+        # === 條件 B：今日量縮 & 續守MA5 ===
         # 1. 續守 MA5
         if c_now < ma5_now: return None
         
-        # 2. 今日量 < 昨日量 * 0.4 (量縮至 40% 以下)
-        if vol_today >= v_prev * 0.4: return None
+        # 2. [調整] 今日量 < 昨日量 * 0.5 (從 0.4 放寬為 0.5，量縮一半)
+        if vol_today >= v_prev * 0.5: return None
 
         # === 條件 C：多頭排列 ===
         if not (ma10_now > ma20_now > ma60_now > ma120_now): return None
@@ -252,11 +250,12 @@ def strategy_washout_rebound(ticker):
             "現價": round(c_now, 2),
             "成交量": int(vol_today / 1000),
             "昨日量": int(v_prev / 1000),
-            "前日量": int(v_prev_2 / 1000), # 顯示出來驗證增加幅度
-            "狀態": "窒息量洗盤"
+            "縮量比例": f"{round((vol_today/v_prev)*100, 1)}%", # 顯示出來讓你參考
+            "狀態": "量縮一半洗盤"
         }
     except Exception:
-        return None
+        return None Exception:
+        
 
 # -------------------------------------------------
 # 策略集合
