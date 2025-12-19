@@ -11,30 +11,35 @@ warnings.filterwarnings("ignore")
 # -------------------------------------------------
 # 頁面設定
 # -------------------------------------------------
-st.set_page_config(page_title="股票策略篩選器（實戰修正版）", layout="wide")
-st.title("📈 股票策略篩選器（實戰修正版）")
+st.set_page_config(page_title="股票策略篩選器（股價強勢版）", layout="wide")
+st.title("📈 股票策略篩選器（股價強勢版）")
 
 st.markdown("""
 ---
+**💎 全策略共同核心：股價站上所有均線**
+**判斷標準：現價 > 5MA、10MA、20MA、60MA、120MA**
+*(不需均線排列，只要股價在所有均線之上即可)*
+
 **策略邏輯說明：**
 
 1. 🚀 **SMC 箱體突破**
-   - 強勢多頭：股價站穩 60MA / 120MA
-   - 倍量突破箱體壓力 (BSL)
+   - 趨勢：現價 > 所有均線
+   - 訊號：倍量突破箱體壓力 (BSL)
 
 2. 🛡️ **SMC 回測支撐**
-   - 強勢多頭：股價站穩 60MA / 120MA
-   - 回踩箱體支撐 (OB)，均線糾結
+   - 趨勢：現價 > 所有均線
+   - 訊號：回踩箱體支撐 (OB)
 
 3. 🛁 **爆量回檔（洗盤）**
-   - **完美多頭排列 (5 > 10 > 20 > 60 > 120)**
-   - **昨日**：出量黑K (**量 > 前日**) + 守住 MA5
-   - **今日**：量縮 (**量 < 昨日**) + 續守 MA5
+   - 趨勢：現價 > 所有均線
+   - 昨日：增量黑K + 守 MA5
+   - 今日：量縮 ( < 昨日) + 續守 MA5
 
 4. 📦 **盤整突破 (均線糾結)**
-   - 均線糾結 + 帶量突破 20日高點
+   - 趨勢：現價 > 所有均線
+   - 訊號：帶量突破 20日高點
 
-※ 全策略：今日成交量 > 500 張
+※ 全策略皆過濾：今日成交量 > 500 張
 ---
 """)
 
@@ -80,22 +85,6 @@ def download_daily(ticker):
         return pd.DataFrame()
 
 # -------------------------------------------------
-# 強勢半年線濾網（核心）
-# -------------------------------------------------
-def strong_half_year_trend(close, ma60, ma120):
-    if len(close) < 125: return False
-    
-    # 近 5 日不破 60 / 120 MA
-    if (close.iloc[-5:] < ma60.iloc[-5:]).any(): return False
-    if (close.iloc[-5:] < ma120.iloc[-5:]).any(): return False
-
-    # 均線向上
-    if ma60.iloc[-1] <= ma60.iloc[-6]: return False
-    if ma120.iloc[-1] <= ma120.iloc[-6]: return False
-
-    return True
-
-# -------------------------------------------------
 # 策略一：SMC 箱體突破
 # -------------------------------------------------
 def strategy_smc_breakout(ticker):
@@ -108,10 +97,18 @@ def strategy_smc_breakout(ticker):
         vol_today = float(volume.iloc[-1])
         if vol_today < 500_000: return None
 
-        ma60 = ta.trend.sma_indicator(close, 60)
-        ma120 = ta.trend.sma_indicator(close, 120)
+        # 計算均線
+        ma5 = ta.trend.sma_indicator(close, 5).iloc[-1]
+        ma10 = ta.trend.sma_indicator(close, 10).iloc[-1]
+        ma20 = ta.trend.sma_indicator(close, 20).iloc[-1]
+        ma60 = ta.trend.sma_indicator(close, 60).iloc[-1]
+        ma120 = ta.trend.sma_indicator(close, 120).iloc[-1]
 
-        if not strong_half_year_trend(close, ma60, ma120): return None
+        c_now = float(close.iloc[-1])
+
+        # 【核心】現價 > 5條均線
+        if not (c_now > ma5 and c_now > ma10 and c_now > ma20 and c_now > ma60 and c_now > ma120):
+            return None
 
         lookback = 40
         resistance = high.iloc[-lookback-1:-1].max()
@@ -119,7 +116,6 @@ def strategy_smc_breakout(ticker):
 
         if (resistance - support) / support > 0.30: return None
 
-        c_now = float(close.iloc[-1])
         if c_now <= resistance: return None
         if vol_today <= float(volume.iloc[-2]) * 2: return None
 
@@ -147,10 +143,18 @@ def strategy_smc_support(ticker):
         vol_today = float(volume.iloc[-1])
         if vol_today < 500_000: return None
 
-        ma60 = ta.trend.sma_indicator(close, 60)
-        ma120 = ta.trend.sma_indicator(close, 120)
+        # 計算均線
+        ma5 = ta.trend.sma_indicator(close, 5).iloc[-1]
+        ma10 = ta.trend.sma_indicator(close, 10).iloc[-1]
+        ma20 = ta.trend.sma_indicator(close, 20).iloc[-1]
+        ma60 = ta.trend.sma_indicator(close, 60).iloc[-1]
+        ma120 = ta.trend.sma_indicator(close, 120).iloc[-1]
 
-        if not strong_half_year_trend(close, ma60, ma120): return None
+        c_now = float(close.iloc[-1])
+
+        # 【核心】現價 > 5條均線
+        if not (c_now > ma5 and c_now > ma10 and c_now > ma20 and c_now > ma60 and c_now > ma120):
+            return None
 
         lookback = 40
         resistance = high.iloc[-lookback:].max()
@@ -158,18 +162,12 @@ def strategy_smc_support(ticker):
 
         if (resistance - support) / support > 0.30: return None
 
-        c_now = float(close.iloc[-1])
         distance = (c_now - support) / support
 
         if not (-0.02 <= distance <= 0.05): return None
 
-        ma_values = [
-            ta.trend.sma_indicator(close, 5).iloc[-1],
-            ta.trend.sma_indicator(close, 10).iloc[-1],
-            ta.trend.sma_indicator(close, 20).iloc[-1],
-            ma60.iloc[-1]
-        ]
-        
+        # 檢查短均線糾結
+        ma_values = [ma5, ma10, ma20]
         if (max(ma_values) - min(ma_values)) / min(ma_values) > 0.10: return None
 
         return {
@@ -184,7 +182,7 @@ def strategy_smc_support(ticker):
         return None
 
 # -------------------------------------------------
-# 策略三：爆量回檔（洗盤）- 修正成交量條件
+# 策略三：爆量回檔 (洗盤)
 # -------------------------------------------------
 def strategy_washout_rebound(ticker):
     try:
@@ -194,58 +192,48 @@ def strategy_washout_rebound(ticker):
         close, open_p, volume = df["Close"], df["Open"], df["Volume"]
         vol_today = float(volume.iloc[-1])
         
-        # 1. 基本量能
         if vol_today < 500_000: return None
 
-        # 2. 計算均線
         ma5 = ta.trend.sma_indicator(close, 5)
         ma10 = ta.trend.sma_indicator(close, 10)
         ma20 = ta.trend.sma_indicator(close, 20)
         ma60 = ta.trend.sma_indicator(close, 60)
         ma120 = ta.trend.sma_indicator(close, 120)
 
-        # 變數準備 (T=今日, T-1=昨日, T-2=前日)
+        # 變數
         c_prev = close.iloc[-2]
         o_prev = open_p.iloc[-2]
         v_prev = float(volume.iloc[-2])
         v_prev_2 = float(volume.iloc[-3])
         
         c_now = float(close.iloc[-1])
-        ma5_now = float(ma5.iloc[-1])
-        ma10_now = float(ma10.iloc[-1])
-        ma20_now = float(ma20.iloc[-1])
-        ma60_now = float(ma60.iloc[-1])
-        ma120_now = float(ma120.iloc[-1])
+        
+        # 取得今日均線數值
+        ma5_now = ma5.iloc[-1]
+        ma10_now = ma10.iloc[-1]
+        ma20_now = ma20.iloc[-1]
+        ma60_now = ma60.iloc[-1]
+        ma120_now = ma120.iloc[-1]
 
-        # === 條件 A: 昨日出量黑K 且 守住MA5 ===
-        # 1. 必須是黑K
-        if c_prev >= o_prev: return None 
-        
-        # 2. 【修正】昨日量 > 前日量 (只要有增量即可)
-        if v_prev <= v_prev_2: return None 
-        
-        # 3. 昨收要守 MA5
-        if c_prev < ma5.iloc[-2]: return None 
+        # === 條件 A: 昨日增量黑K 且 守住MA5 ===
+        if c_prev >= o_prev: return None # 必須黑K
+        if v_prev <= v_prev_2: return None # 量 > 前日量
+        if c_prev < ma5.iloc[-2]: return None # 昨收要守 MA5
 
         # === 條件 B: 今日量縮 且 續守MA5 ===
-        # 1. 今收要守 MA5
-        if c_now < ma5_now: return None 
-        
-        # 2. 【修正】今日量 < 昨日量 (只要量縮即可)
-        if vol_today >= v_prev: return None 
+        if c_now < ma5_now: return None # 今收要守 MA5
+        if vol_today >= v_prev: return None # 量 < 昨日量
 
-        # === 條件 C: 完美多頭排列 ===
-        # 5 > 10 > 20 > 60 > 120
-        if not (ma5_now > ma10_now > ma20_now > ma60_now > ma120_now):
+        # === 條件 C: 【核心】現價 > 5條均線 ===
+        if not (c_now > ma5_now and c_now > ma10_now and c_now > ma20_now and c_now > ma60_now and c_now > ma120_now):
             return None
 
         return {
             "股票": ticker,
             "現價": round(c_now, 2),
             "成交量(千)": int(vol_today / 1000),
-            "昨日量(千)": int(v_prev / 1000),
             "縮量比": f"{round((vol_today/v_prev)*100, 1)}%",
-            "狀態": "增量黑K後量縮 🛁"
+            "狀態": "強勢洗盤 🛁"
         }
     except Exception:
         return None
@@ -256,7 +244,7 @@ def strategy_washout_rebound(ticker):
 def strategy_consolidation(ticker):
     try:
         df = download_daily(ticker)
-        if len(df) < 120: return None
+        if len(df) < 130: return None
 
         close, open_p, high, volume = df["Close"], df["Open"], df["High"], df["Volume"]
         vol_today = float(volume.iloc[-1])
@@ -264,20 +252,24 @@ def strategy_consolidation(ticker):
         if vol_today < 500_000: return None
 
         c_now = float(close.iloc[-1])
-        ma5  = ta.trend.sma_indicator(close, 5)
-        ma10 = ta.trend.sma_indicator(close, 10)
-        ma20 = ta.trend.sma_indicator(close, 20)
-        ma60 = ta.trend.sma_indicator(close, 60)
         
-        if c_now < ma60.iloc[-1]: return None
+        ma5  = ta.trend.sma_indicator(close, 5).iloc[-1]
+        ma10 = ta.trend.sma_indicator(close, 10).iloc[-1]
+        ma20 = ta.trend.sma_indicator(close, 20).iloc[-1]
+        ma60 = ta.trend.sma_indicator(close, 60).iloc[-1]
+        ma120 = ta.trend.sma_indicator(close, 120).iloc[-1]
+        
+        # 【核心】現價 > 5條均線
+        if not (c_now > ma5 and c_now > ma10 and c_now > ma20 and c_now > ma60 and c_now > ma120):
+            return None
 
-        ma_vals = [ma5.iloc[-1], ma10.iloc[-1], ma20.iloc[-1]]
+        # 短線均線糾結 (5, 10, 20)
+        ma_vals = [ma5, ma10, ma20]
         if (max(ma_vals) - min(ma_vals)) / c_now > 0.06: return None
 
         resistance = float(high.iloc[:-1].tail(20).max())
         if c_now <= resistance: return None
 
-        # 放量 1.5 倍
         vol_ma5 = float(volume.rolling(5).mean().iloc[-2])
         if vol_today < vol_ma5 * 1.5: return None
         
