@@ -12,7 +12,7 @@ warnings.filterwarnings("ignore")
 # 頁面設定
 # -------------------------------------------------
 st.set_page_config(page_title="股票策略篩選器）", layout="wide")
-st.title("📈 股票策略篩選器
+st.title("📈 股票策略篩選器")
 
 st.markdown("""
 ---
