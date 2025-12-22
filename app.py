@@ -20,13 +20,13 @@ st.markdown("""
 **判斷標準：現價 > 5MA、10MA、20MA、60MA、120MA**
 
 **💰 風險管理設定 (Risk Management)：**
-* **🛑 停損 (SL)**：**實體跌破 5日均線** (收盤價 < 5MA)
-* **🎯 停利 (TP)**：風險報酬比 **1 : 1.5** (獲利目標)
+* **🛑 停損 (SL)**：跌破 **5日均線 (5MA)**
+* **🎯 停利 (TP)**：風險報酬比 **1 : 1.5** (獲利目標較容易達成)
 
 **策略邏輯說明：**
 1. 🚀 **SMC 箱體突破**：倍量突破箱體壓力
 2. 🛡️ **SMC 回測支撐**：回踩箱體支撐 (OB)
-3. 🛁 **爆量回檔（洗盤）**：昨日增量黑K**實體守住5MA**，今日量縮續守
+3. 🛁 **爆量回檔（洗盤）**：昨日增量黑K守5MA，今日量縮續守
 4. 📦 **盤整突破**：均線糾結帶量突破
 
 ※ 全策略皆過濾：今日成交量 > 500 張
@@ -75,7 +75,7 @@ def download_daily(ticker):
         return pd.DataFrame()
 
 # -------------------------------------------------
-# 輔助：計算風控數據 (1:1.5 RR, 實體跌破)
+# 輔助：計算風控數據 (1:1.5 RR)
 # -------------------------------------------------
 def calculate_risk_reward(c_now, ma5_now, date_now):
     """
@@ -98,7 +98,7 @@ def calculate_risk_reward(c_now, ma5_now, date_now):
     }
 
 # -------------------------------------------------
-# 核心：回測引擎 (Backtest Engine)
+# 核心：回測引擎
 # -------------------------------------------------
 def run_backtest(df, strategy_type, months):
     try:
@@ -130,7 +130,7 @@ def run_backtest(df, strategy_type, months):
             c_curr = close.iloc[i]
             ma5_curr = ma5.iloc[i]
 
-            # 1. 出場檢查：實體跌破 5MA (收盤價 < 5MA)
+            # 1. 出場檢查
             if in_position:
                 if c_curr < ma5_curr:
                     profit = (c_curr - entry_price) / entry_price
@@ -168,9 +168,9 @@ def run_backtest(df, strategy_type, months):
                 v_prev_2 = volume.iloc[i-2]
                 ma5_prev = ma5.iloc[i-1]
                 
-                # 昨日條件：黑K + 增量(>前日) + 【實體守住MA5】(收盤>=5MA)
+                # 昨日：黑K + 增量(>前日) + 守MA5
                 cond_prev = (c_prev < o_prev) and (v_prev > v_prev_2) and (c_prev >= ma5_prev)
-                # 今日條件：量縮(<昨日) + 【實體續守MA5】
+                # 今日：量縮(<昨日) + 守MA5
                 cond_curr = (volume.iloc[i] < v_prev) and (c_curr >= ma5_curr)
                 
                 if cond_prev and cond_curr:
@@ -322,13 +322,12 @@ def strategy_washout_rebound(ticker, backtest_months):
         c_now = float(close.iloc[-1])
         ma5_now = ma5.iloc[-1]
         
-        # === 條件 A: 昨日增量黑K 且 實體守住MA5 ===
+        # === 條件 A: 昨日增量黑K 且 守住MA5 ===
         if c_prev >= o_prev: return None 
         if v_prev <= v_prev_2: return None 
-        # 收盤價 >= 5MA 才算實體守住
         if c_prev < ma5.iloc[-2]: return None 
 
-        # === 條件 B: 今日量縮 且 實體續守MA5 ===
+        # === 條件 B: 今日量縮 且 續守MA5 ===
         if c_now < ma5_now: return None 
         if vol_today >= v_prev: return None 
 
