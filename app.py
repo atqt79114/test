@@ -11,8 +11,8 @@ warnings.filterwarnings("ignore")
 # -------------------------------------------------
 # 頁面設定
 # -------------------------------------------------
-st.set_page_config(page_title="股票策略篩選器（極速連結版）", layout="wide")
-st.title("📈 股票策略篩選器（極速連結版）")
+st.set_page_config(page_title="股票策略篩選器（阿良限定版）", layout="wide")
+st.title("📈 股票策略篩選器（阿良限定版）")
 
 st.markdown("""
 ---
@@ -22,6 +22,9 @@ st.markdown("""
 **💰 風險管理設定：**
 * **🛑 停損**：實體跌破 5MA
 * **🎯 停利**：風險報酬比 **1 : 1.5**
+
+**篩選範圍：**
+* 僅包含 **上市櫃普通股** (排除 ETF)。
 
 ※ 全策略皆過濾：今日成交量 > 500 張
 ---
@@ -36,14 +39,14 @@ def get_chip_link(ticker):
     return f"https://tw.stock.yahoo.com/quote/{code}/institutional-trading"
 
 # -------------------------------------------------
-# 股票清單 (回傳 字典: 代碼->名稱)
+# 股票清單 (排除 ETF，只留 4碼個股)
 # -------------------------------------------------
 @st.cache_data(ttl=86400)
 def get_all_tw_tickers():
     headers = {"User-Agent": "Mozilla/5.0"}
     stock_map = {} 
     
-    for mode in ["2", "4"]:
+    for mode in ["2", "4"]: # 2=上市, 4=上櫃
         url = f"https://isin.twse.com.tw/isin/C_public.jsp?strMode={mode}"
         try:
             r = requests.get(url, headers=headers, verify=False, timeout=10)
@@ -54,8 +57,9 @@ def get_all_tw_tickers():
                 if len(data) >= 2:
                     code = data[0]
                     name = data[1]
-                    # 允許 4碼(個股) 或 5碼(ETF)
-                    if code.isdigit() and (len(code) == 4 or len(code) == 5):
+                    
+                    # === 修改點：嚴格限制 4 碼 (排除 5碼 ETF) ===
+                    if code.isdigit() and len(code) == 4:
                         suffix = ".TWO" if mode == "4" else ".TW"
                         stock_map[f"{code}{suffix}"] = name
         except Exception:
@@ -147,7 +151,6 @@ def run_backtest(df, strategy_type, months):
                 v_prev = volume.iloc[i-1]
                 v_prev_2 = volume.iloc[i-2]
                 ma5_prev = ma5.iloc[i-1]
-                
                 cond_prev = (c_prev < o_prev) and (v_prev > v_prev_2) and (c_prev >= ma5_prev)
                 cond_curr = (volume.iloc[i] < v_prev) and (c_curr >= ma5_curr)
                 if cond_prev and cond_curr: signal = True
@@ -467,7 +470,6 @@ if st.button("開始掃描", type="primary"):
                 
                 other_cols = [c for c in df_res.columns if c not in target_cols]
                 
-                # 顯示表格並設定超連結
                 st.dataframe(
                     df_res[target_cols + other_cols], 
                     use_container_width=True,
