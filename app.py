@@ -5,27 +5,26 @@ import ta
 import requests
 import warnings
 import time
-import random
 
 warnings.filterwarnings("ignore")
 
 # -------------------------------------------------
 # 頁面設定
 # -------------------------------------------------
-st.set_page_config(page_title="股票策略篩選器（TP實戰回測版）", layout="wide")
-st.title("📈 股票策略篩選器（TP實戰回測版）")
+st.set_page_config(page_title="股票策略篩選器（阿良出版）", layout="wide")
+st.title("📈 股票策略篩選器（阿良出版）")
 
 st.markdown("""
 ---
 **💎 全策略共同核心：股價站上所有均線**
 **判斷標準：現價 > 5MA、10MA、20MA、60MA、120MA**
 
-**💰 風險管理設定 (回測嚴格執行)：**
-* **🛑 停損**：實體跌破 5MA (收盤 < 5MA)
-* **🎯 停利**：碰到目標價 (1 : 1.5) 即出場
+**💰 風險管理設定：**
+* **🛑 停損**：實體跌破 5MA
+* **🎯 停利**：風險報酬比 **1 : 1.5**
 
-**籌碼數據：**
-* 直接讀取 **外資今日** 與 **外資近5日** 買賣超張數。
+**篩選範圍：**
+* 僅包含 **上市櫃普通股** (排除 ETF)。
 
 ※ 全策略皆過濾：今日成交量 > 500 張
 ---
@@ -35,58 +34,37 @@ st.markdown("""
 # 輔助：產生外資連結
 # -------------------------------------------------
 def get_chip_link(ticker):
+    # 處理代號: 2330.TW -> 2330
     code = ticker.split('.')[0]
     return f"https://tw.stock.yahoo.com/quote/{code}/institutional-trading"
 
 # -------------------------------------------------
-# 核心：抓取外資買賣超
-# -------------------------------------------------
-def get_chip_data(ticker):
-    try:
-        time.sleep(random.uniform(0.1, 0.3)) # 微幅延遲
-        symbol = ticker.split('.')[0]
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        }
-        url = f"https://tw.stock.yahoo.com/_td-stock/api/resource/StockServices.institutionalTrading;symbol={symbol}"
-        r = requests.get(url, headers=headers, timeout=5)
-        js = r.json()
-
-        if not js.get("data"): return 0, 0
-
-        d_today = js["data"][0]
-        today_net = (int(d_today["foreignInvestors"]["buy"]) - int(d_today["foreignInvestors"]["sell"])) // 1000
-        
-        data_5d = js["data"][:5]
-        tot_5d = 0
-        for d in data_5d:
-            tot_5d += int(d["foreignInvestors"]["buy"]) - int(d["foreignInvestors"]["sell"])
-        
-        return today_net, tot_5d // 1000
-    except:
-        return 0, 0
-
-# -------------------------------------------------
-# 股票清單
+# 股票清單 (排除 ETF，只留 4碼個股)
 # -------------------------------------------------
 @st.cache_data(ttl=86400)
 def get_all_tw_tickers():
     headers = {"User-Agent": "Mozilla/5.0"}
     stock_map = {} 
-    for mode in ["2", "4"]:
+    
+    for mode in ["2", "4"]: # 2=上市, 4=上櫃
         url = f"https://isin.twse.com.tw/isin/C_public.jsp?strMode={mode}"
         try:
             r = requests.get(url, headers=headers, verify=False, timeout=10)
             df = pd.read_html(r.text)[0].iloc[1:]
+            
             for item in df[0]:
                 data = str(item).split()
                 if len(data) >= 2:
                     code = data[0]
                     name = data[1]
+                    
+                    # === 修改點：嚴格限制 4 碼 (排除 5碼 ETF) ===
                     if code.isdigit() and len(code) == 4:
                         suffix = ".TWO" if mode == "4" else ".TW"
                         stock_map[f"{code}{suffix}"] = name
-        except Exception: pass
+        except Exception:
+            pass
+            
     return stock_map
 
 # -------------------------------------------------
@@ -120,7 +98,7 @@ def calculate_risk_reward(c_now, ma5_now, date_now):
     }
 
 # -------------------------------------------------
-# 核心：回測引擎 (修正版 - 包含 TP 出場)
+# 核心：回測引擎
 # -------------------------------------------------
 def run_backtest(df, strategy_type, months):
     try:
@@ -130,14 +108,13 @@ def run_backtest(df, strategy_type, months):
         trades = []
         in_position = False
         entry_price = 0
-        target_price = 0 # 紀錄當筆交易的目標價
         
         start_idx = len(df) - lookback_days
         if start_idx < 130: start_idx = 130
         
         close = df["Close"]
         open_p = df["Open"]
-        high = df["High"] # 用最高價判斷是否碰到停利
+        high = df["High"]
         low = df["Low"]
         volume = df["Volume"]
         
@@ -151,28 +128,15 @@ def run_backtest(df, strategy_type, months):
 
         for i in range(start_idx, len(df) - 1):
             c_curr = close.iloc[i]
-            h_curr = high.iloc[i]
             ma5_curr = ma5.iloc[i]
 
-            # 1. 出場檢查
             if in_position:
-                # A. 停利優先：如果當天最高價 >= 目標價，視為停利出場
-                if h_curr >= target_price:
-                    # 獲利 = (目標價 - 進場價) / 進場價
-                    profit = (target_price - entry_price) / entry_price
-                    trades.append(profit)
-                    in_position = False
-                    continue # 結束這一天，這筆單結算
-
-                # B. 停損：如果沒停利，但收盤跌破 5MA，視為停損
                 if c_curr < ma5_curr:
                     profit = (c_curr - entry_price) / entry_price
                     trades.append(profit)
                     in_position = False
-                
                 continue
 
-            # 2. 進場檢查 (空手時)
             if not (c_curr > ma5_curr and c_curr > ma10.iloc[i] and c_curr > ma20.iloc[i] and 
                     c_curr > ma60.iloc[i] and c_curr > ma120.iloc[i]):
                 continue
@@ -201,10 +165,6 @@ def run_backtest(df, strategy_type, months):
             if signal:
                 in_position = True
                 entry_price = c_curr
-                # === 計算這筆單的 TP ===
-                risk = entry_price - ma5_curr
-                if risk <= 0: risk = entry_price * 0.01 # 防呆
-                target_price = entry_price + (risk * 1.5)
 
         if not trades:
             return {"回測勝率": "無訊號", "平均獲利": "0%", "總交易": 0}
@@ -431,23 +391,28 @@ source = st.sidebar.radio("選擇", ["手動", "全市場"])
 if source == "手動":
     raw = st.sidebar.text_area("股票代碼", "2330.TW, 2317.TW")
     tickers = [x.strip() for x in raw.split(",") if x.strip()]
+    
     full_map = st.session_state.get("stock_map", {})
     if not full_map:
         with st.spinner("載入名稱庫..."):
             st.session_state["stock_map"] = get_all_tw_tickers()
             full_map = st.session_state["stock_map"]
+    
     stock_map = {}
     for t in tickers:
         stock_map[t] = full_map.get(t, t)
+
 else:
     if st.sidebar.button("重抓上市上櫃清單"):
         with st.spinner("更新清單中..."):
             st.session_state["stock_map"] = get_all_tw_tickers()
             st.rerun()
+    
     stock_map = st.session_state.get("stock_map", {})
     if not stock_map:
         st.session_state["stock_map"] = get_all_tw_tickers()
         stock_map = st.session_state["stock_map"]
+
     st.sidebar.write(f"目前快取: {len(stock_map)} 檔")
     limit = st.sidebar.slider("掃描數量", 50, 2000, 200)
     tickers = list(stock_map.keys())[:limit]
@@ -460,41 +425,51 @@ st.sidebar.header("📊 回測設定")
 st.sidebar.caption("※ 回測僅適用於：爆量回檔 & 盤整突破")
 backtest_period = st.sidebar.radio("回測區間", [3, 6, 12], format_func=lambda x: f"過去 {x} 個月")
 
+# -------------------------------------------------
+# 執行掃描
+# -------------------------------------------------
 if st.button("開始掃描", type="primary"):
     if not tickers:
         st.error("沒有股票代碼！")
     else:
         result = {k: [] for k in selected}
+        
         progress_bar = st.progress(0)
         status_text = st.empty()
+        
         total = len(tickers)
         for i, t in enumerate(tickers):
             progress_bar.progress((i + 1) / total)
             name = stock_map.get(t, t)
             status_text.text(f"掃描中 ({i+1}/{total}): {t} {name}")
+            
             for k in selected:
                 r = STRATEGIES[k](t, name, backtest_period)
                 if r:
-                    today, d5 = get_chip_data(t)
-                    r["外資今日(張)"] = today
-                    r["外資5日(張)"] = d5
                     r["策略"] = k
                     result[k].append(r)
         
         progress_bar.empty()
         status_text.empty()
+
         has_data = False
         for k in selected:
             if result[k]:
                 has_data = True
                 st.subheader(f"📊 {k}")
+                
                 df_res = pd.DataFrame(result[k])
-                base_cols = ["代號", "名稱", "現價", "外資今日(張)", "外資5日(張)", "停損(5MA)", "停利(1:1.5)", "外資詳情"]
+                
+                # 欄位排序
+                base_cols = ["代號", "名稱", "現價", "停損(5MA)", "停利(1:1.5)", "外資詳情"]
+                
                 if "回測勝率" in df_res.columns:
                     target_cols = base_cols + ["回測勝率", "平均獲利", "總交易"]
                 else:
                     target_cols = base_cols
+                
                 other_cols = [c for c in df_res.columns if c not in target_cols]
+                
                 st.dataframe(
                     df_res[target_cols + other_cols], 
                     use_container_width=True,
@@ -504,5 +479,6 @@ if st.button("開始掃描", type="primary"):
                         )
                     }
                 )
+        
         if not has_data:
             st.info("掃描完成，但沒有符合條件的股票。")
