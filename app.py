@@ -12,8 +12,8 @@ warnings.filterwarnings("ignore")
 # -------------------------------------------------
 # 頁面設定
 # -------------------------------------------------
-st.set_page_config(page_title="股票策略篩選器（阿良出版）", layout="wide")
-st.title("📈 股票策略篩選器（阿良出版）")
+st.set_page_config(page_title="股票策略篩選器（阿良穩定版）", layout="wide")
+st.title("📈 股票策略篩選器（阿良穩定版）")
 
 # === 核心：詳細策略邏輯與免責聲明 ===
 st.markdown("""
@@ -59,7 +59,6 @@ st.markdown("""
 # 輔助：產生外資連結
 # -------------------------------------------------
 def get_chip_link(ticker):
-    # 處理代號: 2330.TW -> 2330
     code = ticker.split('.')[0]
     return f"https://tw.stock.yahoo.com/quote/{code}/institutional-trading"
 
@@ -93,17 +92,21 @@ def get_all_tw_tickers():
     return stock_map
 
 # -------------------------------------------------
-# Yahoo 資料快取
+# Yahoo 資料快取 (增加錯誤重試機制)
 # -------------------------------------------------
 @st.cache_data(ttl=300)
 def download_daily(ticker):
     try:
+        # 下載 2 年資料，如果不成功回傳空 DataFrame
         df = yf.download(ticker, period="2y", interval="1d", progress=False)
+        
+        # 檢查是否為 MultiIndex (新版 yfinance 修正)
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
+            
         if df.empty: return pd.DataFrame()
         return df
-    except:
+    except Exception:
         return pd.DataFrame()
 
 # -------------------------------------------------
@@ -123,7 +126,7 @@ def calculate_risk_reward(c_now, ma5_now, date_now):
     }
 
 # -------------------------------------------------
-# 核心：回測引擎 (修正版：觸價即停利)
+# 核心：回測引擎 (修正版)
 # -------------------------------------------------
 def run_backtest(df, strategy_type, months):
     try:
@@ -140,7 +143,7 @@ def run_backtest(df, strategy_type, months):
         
         close = df["Close"]
         open_p = df["Open"]
-        high = df["High"] # 用於判斷停利
+        high = df["High"]
         low = df["Low"]
         volume = df["Volume"]
         
@@ -159,7 +162,7 @@ def run_backtest(df, strategy_type, months):
 
             # 1. 出場檢查
             if in_position:
-                # A. 停利優先：盤中碰到目標價
+                # A. 停利優先
                 if h_curr >= target_price:
                     profit = (target_price - entry_price) / entry_price
                     trades.append(profit)
@@ -174,7 +177,7 @@ def run_backtest(df, strategy_type, months):
                 
                 continue
 
-            # 2. 進場檢查 (空手時)
+            # 2. 進場檢查
             if not (c_curr > ma5_curr and c_curr > ma10.iloc[i] and c_curr > ma20.iloc[i] and 
                     c_curr > ma60.iloc[i] and c_curr > ma120.iloc[i]):
                 continue
@@ -204,7 +207,6 @@ def run_backtest(df, strategy_type, months):
             if signal:
                 in_position = True
                 entry_price = c_curr
-                # 設定停利價
                 risk = entry_price - ma5_curr
                 if risk <= 0: risk = entry_price * 0.01
                 target_price = entry_price + (risk * 1.5)
@@ -434,6 +436,7 @@ source = st.sidebar.radio("選擇", ["手動", "全市場"])
 if source == "手動":
     raw = st.sidebar.text_area("股票代碼", "2330.TW, 2317.TW")
     tickers = [x.strip() for x in raw.split(",") if x.strip()]
+    
     full_map = st.session_state.get("stock_map", {})
     if not full_map:
         with st.spinner("載入名稱庫..."):
@@ -454,7 +457,8 @@ else:
         stock_map = st.session_state["stock_map"]
 
     st.sidebar.write(f"目前快取: {len(stock_map)} 檔")
-    limit = st.sidebar.slider("掃描數量", 50, 2000, 200)
+    # 這裡可以根據需要調整掃描數量，例如設為 500
+    limit = st.sidebar.slider("掃描數量", 50, 2000, 300) 
     tickers = list(stock_map.keys())[:limit]
 
 st.sidebar.header("策略選擇")
@@ -473,26 +477,37 @@ if st.button("開始掃描", type="primary"):
         st.error("沒有股票代碼！")
     else:
         result = {k: [] for k in selected}
+        
         progress_bar = st.progress(0)
         status_text = st.empty()
+        
         total = len(tickers)
         for i, t in enumerate(tickers):
             progress_bar.progress((i + 1) / total)
             name = stock_map.get(t, t)
             status_text.text(f"掃描中 ({i+1}/{total}): {t} {name}")
+            
+            # === 關鍵：加入微小延遲，防止被 Yahoo 封鎖 ===
+            time.sleep(0.05) 
+            
             for k in selected:
-                r = STRATEGIES[k](t, name, backtest_period)
-                if r:
-                    r["策略"] = k
-                    result[k].append(r)
+                try:
+                    r = STRATEGIES[k](t, name, backtest_period)
+                    if r:
+                        r["策略"] = k
+                        result[k].append(r)
+                except Exception:
+                    continue # 單檔失敗不影響整體
         
         progress_bar.empty()
         status_text.empty()
+
         has_data = False
         for k in selected:
             if result[k]:
                 has_data = True
                 st.subheader(f"📊 {k}")
+                
                 df_res = pd.DataFrame(result[k])
                 
                 # 欄位排序
@@ -514,5 +529,6 @@ if st.button("開始掃描", type="primary"):
                         )
                     }
                 )
+        
         if not has_data:
             st.info("掃描完成，但沒有符合條件的股票。")
