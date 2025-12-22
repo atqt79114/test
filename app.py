@@ -1,242 +1,481 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import numpy as np
 import ta
-import datetime
+import requests
 import warnings
+import time
+
 warnings.filterwarnings("ignore")
 
-# ----------------------------
-# Streamlit 設定
-# ----------------------------
-st.set_page_config(page_title="策略選股 + 回測整合版", layout="wide")
-st.title("📈 股票策略掃描＋回測（含停利 1:1.5）")
+# -------------------------------------------------
+# 頁面設定
+# -------------------------------------------------
+st.set_page_config(page_title="股票策略篩選器（實戰風控版 1:1.5）", layout="wide")
+st.title("📈 股票策略篩選器（實戰風控版 1:1.5）")
 
-MIN_VOL = 500_000  
-RR = 1.5  # 停利 RR 比率 1:1.5
+st.markdown("""
+---
+**💎 全策略共同核心：股價站上所有均線**
+**判斷標準：現價 > 5MA、10MA、20MA、60MA、120MA**
 
-# ----------------------------
-# 停利 / 停損模型
-# ----------------------------
+**💰 風險管理設定 (Risk Management)：**
+* **🛑 停損 (SL)**：**實體跌破 5日均線** (收盤價 < 5MA)
+* **🎯 停利 (TP)**：風險報酬比 **1 : 1.5** (獲利目標)
 
-def compute_sl_tp(entry_price, ma_value, rr=1.5):
-    sl = ma_value
-    risk = entry_price - sl
+**策略邏輯說明：**
+1. 🚀 **SMC 箱體突破**：倍量突破箱體壓力
+2. 🛡️ **SMC 回測支撐**：回踩箱體支撐 (OB)
+3. 🛁 **爆量回檔（洗盤）**：昨日增量黑K**實體守住5MA**，今日量縮續守
+4. 📦 **盤整突破**：均線糾結帶量突破
 
-    if risk <= 0:
-        risk = entry_price * 0.003  # fallback
+※ 全策略皆過濾：今日成交量 > 500 張
+---
+""")
 
-    tp = entry_price + rr * risk
-    return sl, tp
-
-
-# ----------------------------
-# 回測引擎（核心）
-# ----------------------------
-def run_backtest(df, strategy_func, months=6):
-
-    df = df.copy()
-
-    if len(df) < 200:
-        return {"勝率": "N/A", "平均%": "N/A", "次數": 0}
-
-    start_i = len(df) - int(months * 22)
-    if start_i < 150:
-        start_i = 150
-
-    close = df["Close"]
-    high = df["High"]
-    volume = df["Volume"]
-    ma5 = ta.trend.sma_indicator(close, 5)
-
-    in_pos = False
-    entry = sl = tp = None
-    pnl_list = []
-
-    for i in range(start_i, len(df)):
-
-        c = close.iloc[i]
-        h = high.iloc[i]
-        m5 = ma5.iloc[i]
-
-        # --- 出場邏輯 ---
-        if in_pos:
-
-            # 停利：今日最高 >= TP
-            if h >= tp:
-                profit_pct = (tp - entry) / entry * 100
-                pnl_list.append(profit_pct)
-                in_pos = False
-                continue
-
-            # 停損：收盤跌破 5MA
-            if c < m5:
-                profit_pct = (c - entry) / entry * 100
-                pnl_list.append(profit_pct)
-                in_pos = False
-                continue
-
-            continue
-
-        # --- 入場邏輯（依你策略） ---
+# -------------------------------------------------
+# 股票清單
+# -------------------------------------------------
+@st.cache_data(ttl=86400)
+def get_all_tw_tickers():
+    headers = {"User-Agent": "Mozilla/5.0"}
+    tickers = []
+    
+    for mode in ["2", "4"]:
+        url = f"https://isin.twse.com.tw/isin/C_public.jsp?strMode={mode}"
         try:
-            signal = strategy_func(df.iloc[: i+1])
-        except:
-            signal = False
+            r = requests.get(url, headers=headers, verify=False, timeout=10)
+            df = pd.read_html(r.text)[0].iloc[1:]
+            
+            for item in df[0]:
+                code = str(item).split()[0]
+                if code.isdigit() and len(code) == 4:
+                    if mode == "4":
+                        tickers.append(f"{code}.TWO")
+                    else:
+                        tickers.append(f"{code}.TW")
+        except Exception:
+            pass
+            
+    return sorted(set(tickers))
 
-        if signal:
-            entry = c
-            sl, tp = compute_sl_tp(entry, m5)
-            in_pos = True
-            continue
+# -------------------------------------------------
+# Yahoo 資料快取
+# -------------------------------------------------
+@st.cache_data(ttl=300)
+def download_daily(ticker):
+    try:
+        df = yf.download(ticker, period="2y", interval="1d", progress=False)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        
+        if df.empty: return pd.DataFrame()
+        return df
+    except:
+        return pd.DataFrame()
 
-    if len(pnl_list) == 0:
-        return {"勝率": "0%", "平均%": "0%", "次數": 0}
-
-    wins = sum(1 for x in pnl_list if x > 0)
-    win_rate = round(wins / len(pnl_list) * 100, 1)
-    avg = round(np.mean(pnl_list), 2)
-
+# -------------------------------------------------
+# 輔助：計算風控數據 (1:1.5 RR, 實體跌破)
+# -------------------------------------------------
+def calculate_risk_reward(c_now, ma5_now, date_now):
+    """
+    計算停損(5MA)與停利(1:1.5 RR)
+    """
+    sl_price = round(ma5_now, 2)
+    risk = c_now - sl_price
+    
+    # 防止極端狀況(股價剛好在5MA上)導致風險為0
+    if risk <= 0: risk = 0.01 
+    
+    # 目標價 = 現價 + (風險 * 1.5)
+    target_price = round(c_now + (risk * 1.5), 2)
+    
     return {
-        "勝率": f"{win_rate}%",
-        "平均%": f"{avg}%",
-        "次數": len(pnl_list)
+        "訊號日期": date_now.strftime('%Y-%m-%d'),
+        "停損(5MA)": sl_price,
+        "停利(1:1.5)": target_price,
+        "潛在獲利": f"{round((risk * 1.5 / c_now)*100, 1)}%"
     }
 
+# -------------------------------------------------
+# 核心：回測引擎 (Backtest Engine)
+# -------------------------------------------------
+def run_backtest(df, strategy_type, months):
+    try:
+        lookback_days = months * 22
+        if len(df) < lookback_days + 130: return None
 
-# ----------------------------
-# 你的四大策略（完整保留）
-# ----------------------------
+        trades = []
+        in_position = False
+        entry_price = 0
+        
+        start_idx = len(df) - lookback_days
+        if start_idx < 130: start_idx = 130
+        
+        close = df["Close"]
+        open_p = df["Open"]
+        high = df["High"]
+        low = df["Low"]
+        volume = df["Volume"]
+        
+        ma5 = ta.trend.sma_indicator(close, 5)
+        ma10 = ta.trend.sma_indicator(close, 10)
+        ma20 = ta.trend.sma_indicator(close, 20)
+        ma60 = ta.trend.sma_indicator(close, 60)
+        ma120 = ta.trend.sma_indicator(close, 120)
+        
+        vol_ma5 = volume.rolling(5).mean()
 
-def strategy_smc_breakout(df):
-    if len(df) < 60:
-        return False
+        for i in range(start_idx, len(df) - 1):
+            c_curr = close.iloc[i]
+            ma5_curr = ma5.iloc[i]
 
-    close = df["Close"].iloc[-1]
-    prev_close = df["Close"].iloc[-2]
-    high = df["High"]
-    low = df["Low"]
-    volume = df["Volume"].iloc[-1]
+            # 1. 出場檢查：實體跌破 5MA (收盤價 < 5MA)
+            if in_position:
+                if c_curr < ma5_curr:
+                    profit = (c_curr - entry_price) / entry_price
+                    trades.append(profit)
+                    in_position = False
+                continue
 
-    hh = high.rolling(20).max().iloc[-2]
-    ll = low.rolling(20).min().iloc[-2]
+            # 2. 進場檢查 (共同濾網：現價 > 所有均線)
+            if not (c_curr > ma5_curr and c_curr > ma10.iloc[i] and c_curr > ma20.iloc[i] and 
+                    c_curr > ma60.iloc[i] and c_curr > ma120.iloc[i]):
+                continue
+            
+            if volume.iloc[i] < 500_000: continue
 
-    if volume < MIN_VOL:
-        return False
+            signal = False
 
-    cond_break = prev_close <= hh and close > hh
-    cond_retest = low.iloc[-1] > hh * 0.995
+            # === 策略邏輯 ===
+            if strategy_type == "breakout":
+                res = high.iloc[i-41:i-1].max()
+                if c_curr > res and volume.iloc[i] > volume.iloc[i-1] * 2:
+                    signal = True
 
-    return cond_break or cond_retest
+            elif strategy_type == "support":
+                sup = low.iloc[i-40:i].min()
+                dist = (c_curr - sup) / sup
+                if -0.02 <= dist <= 0.05:
+                    vals = [ma5.iloc[i], ma10.iloc[i], ma20.iloc[i]]
+                    if (max(vals) - min(vals))/min(vals) <= 0.10:
+                        signal = True
 
+            elif strategy_type == "washout":
+                c_prev = close.iloc[i-1]
+                o_prev = open_p.iloc[i-1]
+                v_prev = volume.iloc[i-1]
+                v_prev_2 = volume.iloc[i-2]
+                ma5_prev = ma5.iloc[i-1]
+                
+                # 昨日條件：黑K + 增量(>前日) + 【實體守住MA5】(收盤>=5MA)
+                cond_prev = (c_prev < o_prev) and (v_prev > v_prev_2) and (c_prev >= ma5_prev)
+                # 今日條件：量縮(<昨日) + 【實體續守MA5】
+                cond_curr = (volume.iloc[i] < v_prev) and (c_curr >= ma5_curr)
+                
+                if cond_prev and cond_curr:
+                    signal = True
+            
+            elif strategy_type == "consolidation":
+                res = high.iloc[i-21:i].max()
+                vals = [ma5.iloc[i], ma10.iloc[i], ma20.iloc[i]]
+                spread = (max(vals) - min(vals)) / c_curr
+                if c_curr > res and spread < 0.06 and volume.iloc[i] > vol_ma5.iloc[i-1] * 1.5:
+                    signal = True
 
-def strategy_smc_support(df):
-    if len(df) < 60:
-        return False
+            if signal:
+                in_position = True
+                entry_price = c_curr
 
-    close = df["Close"].iloc[-1]
-    prev_close = df["Close"].iloc[-2]
-    low = df["Low"]
-    volume = df["Volume"].iloc[-1]
+        if not trades:
+            return {"回測勝率": "無訊號", "平均獲利": "0%", "總交易": 0}
+        
+        win_count = sum(1 for p in trades if p > 0)
+        win_rate = (win_count / len(trades)) * 100
+        avg_ret = (sum(trades) / len(trades)) * 100
+        
+        return {
+            "回測勝率": f"{round(win_rate, 1)}%",
+            "平均獲利": f"{round(avg_ret, 2)}%",
+            "總交易": len(trades)
+        }
 
-    ll = low.rolling(20).min().iloc[-2]
+    except Exception:
+        return None
 
-    if volume < MIN_VOL:
-        return False
+# -------------------------------------------------
+# 策略一：SMC 箱體突破
+# -------------------------------------------------
+def strategy_smc_breakout(ticker, backtest_months):
+    try:
+        df = download_daily(ticker)
+        if len(df) < 200: return None
 
-    cond_hit = low.iloc[-1] <= ll * 1.005
-    cond_reject = close > prev_close
+        close, high, low, volume = df["Close"], df["High"], df["Low"], df["Volume"]
+        vol_today = float(volume.iloc[-1])
+        if vol_today < 500_000: return None
 
-    return cond_hit and cond_reject
+        ma5 = ta.trend.sma_indicator(close, 5).iloc[-1]
+        ma10 = ta.trend.sma_indicator(close, 10).iloc[-1]
+        ma20 = ta.trend.sma_indicator(close, 20).iloc[-1]
+        ma60 = ta.trend.sma_indicator(close, 60).iloc[-1]
+        ma120 = ta.trend.sma_indicator(close, 120).iloc[-1]
 
+        c_now = float(close.iloc[-1])
 
-def strategy_washout(df):
-    if len(df) < 80:
-        return False
+        # 【核心】現價 > 5條均線
+        if not (c_now > ma5 and c_now > ma10 and c_now > ma20 and c_now > ma60 and c_now > ma120):
+            return None
 
-    close = df["Close"].iloc[-1]
-    low = df["Low"].iloc[-1]
-    open_ = df["Open"].iloc[-1]
-    volume = df["Volume"].iloc[-1]
+        lookback = 40
+        resistance = high.iloc[-lookback-1:-1].max()
+        support = low.iloc[-lookback-1:-1].min()
 
-    ma20 = ta.trend.sma_indicator(df["Close"], 20).iloc[-1]
+        if (resistance - support) / support > 0.30: return None
+        if c_now <= resistance: return None
+        if vol_today <= float(volume.iloc[-2]) * 2: return None
 
-    cond_down = open_ > close
-    cond_recover = close > ma20
-    cond_vol = volume > df["Volume"].rolling(20).mean().iloc[-1] * 1.5
+        bt_res = run_backtest(df, "breakout", backtest_months)
+        rr_data = calculate_risk_reward(c_now, ma5, df.index[-1])
 
-    return cond_down and cond_recover and cond_vol
+        return {
+            "股票": ticker,
+            "現價": round(c_now, 2),
+            **rr_data,
+            **bt_res,
+            "狀態": "倍量突破 🚀"
+        }
+    except Exception:
+        return None
 
+# -------------------------------------------------
+# 策略二：SMC 回測支撐
+# -------------------------------------------------
+def strategy_smc_support(ticker, backtest_months):
+    try:
+        df = download_daily(ticker)
+        if len(df) < 200: return None
 
-def strategy_consolidation(df):
-    if len(df) < 150:
-        return False
+        close, high, low, volume = df["Close"], df["High"], df["Low"], df["Volume"]
+        vol_today = float(volume.iloc[-1])
+        if vol_today < 500_000: return None
 
-    close = df["Close"].iloc[-1]
-    high = df["High"]
-    low = df["Low"]
-    volume = df["Volume"].iloc[-1]
+        ma5 = ta.trend.sma_indicator(close, 5).iloc[-1]
+        ma10 = ta.trend.sma_indicator(close, 10).iloc[-1]
+        ma20 = ta.trend.sma_indicator(close, 20).iloc[-1]
+        ma60 = ta.trend.sma_indicator(close, 60).iloc[-1]
+        ma120 = ta.trend.sma_indicator(close, 120).iloc[-1]
 
-    hh = high.rolling(40).max().iloc[-1]
-    ll = low.rolling(40).min().iloc[-1]
+        c_now = float(close.iloc[-1])
 
-    cond_range = (hh - ll) / ll < 0.08
-    cond_break = close > hh
+        # 【核心】現價 > 5條均線
+        if not (c_now > ma5 and c_now > ma10 and c_now > ma20 and c_now > ma60 and c_now > ma120):
+            return None
 
-    if volume < MIN_VOL:
-        return False
+        lookback = 40
+        resistance = high.iloc[-lookback:].max()
+        support = low.iloc[-lookback:].min()
 
-    return cond_range and cond_break
+        if (resistance - support) / support > 0.30: return None
+        distance = (c_now - support) / support
+        if not (-0.02 <= distance <= 0.05): return None
 
+        ma_values = [ma5, ma10, ma20]
+        if (max(ma_values) - min(ma_values)) / min(ma_values) > 0.10: return None
 
-STRATEGY_MAP = {
-    "SMC Breakout": strategy_smc_breakout,
-    "SMC Support": strategy_smc_support,
-    "Washout": strategy_washout,
-    "Consolidation": strategy_consolidation
+        bt_res = run_backtest(df, "support", backtest_months)
+        rr_data = calculate_risk_reward(c_now, ma5, df.index[-1])
+
+        return {
+            "股票": ticker,
+            "現價": round(c_now, 2),
+            **rr_data,
+            **bt_res,
+            "狀態": "回測支撐 🛡️"
+        }
+    except Exception:
+        return None
+
+# -------------------------------------------------
+# 策略三：爆量回檔 (洗盤)
+# -------------------------------------------------
+def strategy_washout_rebound(ticker, backtest_months):
+    try:
+        df = download_daily(ticker)
+        if len(df) < 125: return None
+
+        close, open_p, volume = df["Close"], df["Open"], df["Volume"]
+        vol_today = float(volume.iloc[-1])
+        if vol_today < 500_000: return None
+
+        ma5 = ta.trend.sma_indicator(close, 5)
+        ma10 = ta.trend.sma_indicator(close, 10)
+        ma20 = ta.trend.sma_indicator(close, 20)
+        ma60 = ta.trend.sma_indicator(close, 60)
+        ma120 = ta.trend.sma_indicator(close, 120)
+
+        c_prev = close.iloc[-2]
+        o_prev = open_p.iloc[-2]
+        v_prev = float(volume.iloc[-2])
+        v_prev_2 = float(volume.iloc[-3])
+        
+        c_now = float(close.iloc[-1])
+        ma5_now = ma5.iloc[-1]
+        
+        # === 條件 A: 昨日增量黑K 且 實體守住MA5 ===
+        if c_prev >= o_prev: return None 
+        if v_prev <= v_prev_2: return None 
+        # 收盤價 >= 5MA 才算實體守住
+        if c_prev < ma5.iloc[-2]: return None 
+
+        # === 條件 B: 今日量縮 且 實體續守MA5 ===
+        if c_now < ma5_now: return None 
+        if vol_today >= v_prev: return None 
+
+        # === 條件 C: 【核心】現價 > 5條均線 ===
+        if not (c_now > ma5_now and c_now > ma10.iloc[-1] and c_now > ma20.iloc[-1] and 
+                c_now > ma60.iloc[-1] and c_now > ma120.iloc[-1]):
+            return None
+
+        bt_res = run_backtest(df, "washout", backtest_months)
+        rr_data = calculate_risk_reward(c_now, ma5_now, df.index[-1])
+
+        return {
+            "股票": ticker,
+            "現價": round(c_now, 2),
+            **rr_data,
+            **bt_res,
+            "狀態": "強勢洗盤 🛁"
+        }
+    except Exception:
+        return None
+
+# -------------------------------------------------
+# 策略四：日線盤整突破
+# -------------------------------------------------
+def strategy_consolidation(ticker, backtest_months):
+    try:
+        df = download_daily(ticker)
+        if len(df) < 130: return None
+
+        close, open_p, high, volume = df["Close"], df["Open"], df["High"], df["Volume"]
+        vol_today = float(volume.iloc[-1])
+        if vol_today < 500_000: return None
+
+        c_now = float(close.iloc[-1])
+        ma5  = ta.trend.sma_indicator(close, 5).iloc[-1]
+        ma10 = ta.trend.sma_indicator(close, 10).iloc[-1]
+        ma20 = ta.trend.sma_indicator(close, 20).iloc[-1]
+        ma60 = ta.trend.sma_indicator(close, 60).iloc[-1]
+        ma120 = ta.trend.sma_indicator(close, 120).iloc[-1]
+        
+        # 【核心】現價 > 5條均線
+        if not (c_now > ma5 and c_now > ma10 and c_now > ma20 and c_now > ma60 and c_now > ma120):
+            return None
+
+        ma_vals = [ma5, ma10, ma20]
+        if (max(ma_vals) - min(ma_vals)) / c_now > 0.06: return None
+
+        resistance = float(high.iloc[:-1].tail(20).max())
+        if c_now <= resistance: return None
+
+        vol_ma5 = float(volume.rolling(5).mean().iloc[-2])
+        if vol_today < vol_ma5 * 1.5: return None
+        if c_now < float(open_p.iloc[-1]): return None
+
+        bt_res = run_backtest(df, "consolidation", backtest_months)
+        rr_data = calculate_risk_reward(c_now, ma5, df.index[-1])
+
+        return {
+            "股票": ticker,
+            "現價": round(c_now, 2),
+            **rr_data,
+            **bt_res,
+            "狀態": "帶量突破 📦"
+        }
+    except Exception:
+        return None
+
+# -------------------------------------------------
+# 策略集合
+# -------------------------------------------------
+STRATEGIES = {
+    "🚀 SMC 箱體突破": strategy_smc_breakout,
+    "🛡️ SMC 回測支撐": strategy_smc_support,
+    "🛁 爆量回檔（洗盤）": strategy_washout_rebound,
+    "📦 盤整突破 (均線糾結)": strategy_consolidation,
 }
 
+# -------------------------------------------------
+# UI 介面
+# -------------------------------------------------
+st.sidebar.header("股票來源")
+source = st.sidebar.radio("選擇", ["手動", "全市場"])
 
-# ----------------------------
-# UI
-# ----------------------------
-st.sidebar.header("設定")
+if source == "手動":
+    raw = st.sidebar.text_area("股票代碼", "2330.TW, 2317.TW")
+    tickers = [x.strip() for x in raw.split(",") if x.strip()]
+else:
+    all_tickers = st.session_state.get("all", [])
+    st.sidebar.write(f"目前快取: {len(all_tickers)} 檔")
+    
+    if st.sidebar.button("重抓上市上櫃清單"):
+        with st.spinner("更新清單中..."):
+            st.session_state["all"] = get_all_tw_tickers()
+            st.rerun()
 
-strategy_name = st.sidebar.selectbox(
-    "選擇策略", list(STRATEGY_MAP.keys())
-)
+    limit = st.sidebar.slider("掃描數量", 50, 2000, 200)
+    tickers = all_tickers[:limit]
 
-months = st.sidebar.radio(
-    "回測期間", [3, 6, 12], index=1, format_func=lambda x: f"{x} 個月"
-)
+st.sidebar.header("策略選擇")
+selected = [k for k in STRATEGIES if st.sidebar.checkbox(k, True)]
 
-user_input = st.sidebar.text_area("輸入股票代碼（用逗號）", "2330.TW, 2317.TW")
-tickers = [x.strip() for x in user_input.split(",") if x.strip()]
+# === 回測設定 ===
+st.sidebar.markdown("---")
+st.sidebar.header("📊 回測設定")
+backtest_period = st.sidebar.radio("回測區間", [3, 6], format_func=lambda x: f"過去 {x} 個月")
 
-if st.button("開始執行 🚀"):
+# -------------------------------------------------
+# 執行掃描
+# -------------------------------------------------
+if st.button("開始掃描", type="primary"):
+    if source == "全市場" and not tickers:
+        with st.spinner("初次執行，正在抓取全市場清單..."):
+            st.session_state["all"] = get_all_tw_tickers()
+            tickers = st.session_state["all"][:limit]
 
-    result_list = []
-    progress = st.progress(0)
+    if not tickers:
+        st.error("沒有股票代碼可以掃描！請檢查來源設定。")
+    else:
+        result = {k: [] for k in selected}
+        
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        total = len(tickers)
+        for i, t in enumerate(tickers):
+            progress_bar.progress((i + 1) / total)
+            status_text.text(f"掃描中 ({i+1}/{total}): {t}")
+            
+            for k in selected:
+                r = STRATEGIES[k](t, backtest_period)
+                if r:
+                    r["策略"] = k
+                    result[k].append(r)
+        
+        progress_bar.empty()
+        status_text.empty()
 
-    df_batch = yf.download(tickers, period="2y", group_by="ticker", progress=False)
-
-    for i, t in enumerate(tickers):
-        progress.progress((i+1)/len(tickers))
-
-        try:
-            df = df_batch[t].copy()
-        except:
-            continue
-
-        df = df.rename(columns=lambda x: x.capitalize())
-
-        strat_func = STRATEGY_MAP[strategy_name]
-
-        r = run_backtest(df, strat_func, months=months)
-        r["股票"] = t
-        result_list.append(r)
-
-    st.subheader("結果")
-    df_show = pd.DataFrame(result_list)
-    st.dataframe(df_show, use_container_width=True)
+        has_data = False
+        for k in selected:
+            if result[k]:
+                has_data = True
+                st.subheader(f"📊 {k}")
+                # 欄位排序優化
+                df_res = pd.DataFrame(result[k])
+                target_cols = ["股票", "現價", "停損(5MA)", "停利(1:1.5)", "回測勝率", "平均獲利", "總交易"]
+                other_cols = [c for c in df_res.columns if c not in target_cols]
+                st.dataframe(df_res[target_cols + other_cols], use_container_width=True)
+        
+        if not has_data:
+            st.info("掃描完成，但沒有符合條件的股票。（建議放寬濾網或檢查掃描數量）")
