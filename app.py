@@ -450,4 +450,56 @@ backtest_period = st.sidebar.radio("回測區間", [3, 6, 12], format_func=lambd
 # 執行掃描
 # -------------------------------------------------
 if st.button("開始掃描", type="primary"):
-    if not tickers
+    if not tickers:
+        st.error("沒有股票代碼！")
+    else:
+        result = {k: [] for k in selected}
+        
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        total = len(tickers)
+        for i, t in enumerate(tickers):
+            progress_bar.progress((i + 1) / total)
+            name = stock_map.get(t, t)
+            status_text.text(f"掃描中 ({i+1}/{total}): {t} {name}")
+            
+            for k in selected:
+                r = STRATEGIES[k](t, name, backtest_period)
+                if r:
+                    r["策略"] = k
+                    result[k].append(r)
+        
+        progress_bar.empty()
+        status_text.empty()
+
+        has_data = False
+        for k in selected:
+            if result[k]:
+                has_data = True
+                st.subheader(f"📊 {k}")
+                
+                df_res = pd.DataFrame(result[k])
+                
+                # 欄位排序
+                base_cols = ["代號", "名稱", "現價", "停損(5MA)", "停利(1:1.5)", "外資詳情"]
+                
+                if "回測勝率" in df_res.columns:
+                    target_cols = base_cols + ["回測勝率", "平均獲利", "總交易"]
+                else:
+                    target_cols = base_cols
+                
+                other_cols = [c for c in df_res.columns if c not in target_cols]
+                
+                st.dataframe(
+                    df_res[target_cols + other_cols], 
+                    use_container_width=True,
+                    column_config={
+                        "外資詳情": st.column_config.LinkColumn(
+                            "外資詳情", display_text="查看數據"
+                        )
+                    }
+                )
+        
+        if not has_data:
+            st.info("掃描完成，但沒有符合條件的股票。")
