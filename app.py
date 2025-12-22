@@ -5,6 +5,7 @@ import ta
 import requests
 import warnings
 import time
+from datetime import datetime, timedelta
 
 warnings.filterwarnings("ignore")
 
@@ -73,220 +74,36 @@ def get_all_tw_tickers():
 # Yahoo 資料快取
 # -------------------------------------------------
 @st.cache_data(ttl=300)
-def download_daily(ticker):
+def download_daily(ticker, period="2y"):
     try:
-        df = yf.download(ticker, period="2y", interval="1d", progress=False)
+        df = yf.download(ticker, period=period, interval="1d", progress=False)
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
-        
         if df.empty: return pd.DataFrame()
         return df
     except:
         return pd.DataFrame()
 
 # -------------------------------------------------
-# 策略一：SMC 箱體突破
+# 訊號後績效計算函式
 # -------------------------------------------------
-def strategy_smc_breakout(ticker):
-    try:
-        df = download_daily(ticker)
-        if len(df) < 200: return None
-
-        close, high, low, volume = df["Close"], df["High"], df["Low"], df["Volume"]
-
-        vol_today = float(volume.iloc[-1])
-        if vol_today < 500_000: return None
-
-        # 計算均線
-        ma5 = ta.trend.sma_indicator(close, 5).iloc[-1]
-        ma10 = ta.trend.sma_indicator(close, 10).iloc[-1]
-        ma20 = ta.trend.sma_indicator(close, 20).iloc[-1]
-        ma60 = ta.trend.sma_indicator(close, 60).iloc[-1]
-        ma120 = ta.trend.sma_indicator(close, 120).iloc[-1]
-
-        c_now = float(close.iloc[-1])
-
-        # 【核心】現價 > 5條均線
-        if not (c_now > ma5 and c_now > ma10 and c_now > ma20 and c_now > ma60 and c_now > ma120):
-            return None
-
-        lookback = 40
-        resistance = high.iloc[-lookback-1:-1].max()
-        support = low.iloc[-lookback-1:-1].min()
-
-        if (resistance - support) / support > 0.30: return None
-
-        if c_now <= resistance: return None
-        if vol_today <= float(volume.iloc[-2]) * 2: return None
-
-        return {
-            "股票": ticker,
-            "現價": round(c_now, 2),
-            "壓力(BSL)": round(resistance, 2),
-            "支撐(OB)": round(support, 2),
-            "成交量(千)": int(vol_today / 1000),
-            "狀態": "倍量突破 🚀"
-        }
-    except Exception:
+def calc_signal_performance(df, signal_idx, days=10, target=0.03):
+    """
+    訊號後 N 日內是否達標 (target = 0.03 代表 +3%)
+    """
+    entry_price = df["Close"].iloc[signal_idx]
+    future = df["Close"].iloc[signal_idx+1 : signal_idx+1+days]
+    if future.empty:
         return None
+    max_gain = (future.max() - entry_price) / entry_price
+    return max_gain >= target
 
 # -------------------------------------------------
-# 策略二：SMC 回測支撐
+# 策略函式 (略與原本一致)
 # -------------------------------------------------
-def strategy_smc_support(ticker):
-    try:
-        df = download_daily(ticker)
-        if len(df) < 200: return None
+# 這裡省略策略一到四的程式碼，你可以直接沿用你現有的
+# 例如：strategy_smc_breakout, strategy_smc_support, strategy_washout_rebound, strategy_consolidation
 
-        close, high, low, volume = df["Close"], df["High"], df["Low"], df["Volume"]
-
-        vol_today = float(volume.iloc[-1])
-        if vol_today < 500_000: return None
-
-        # 計算均線
-        ma5 = ta.trend.sma_indicator(close, 5).iloc[-1]
-        ma10 = ta.trend.sma_indicator(close, 10).iloc[-1]
-        ma20 = ta.trend.sma_indicator(close, 20).iloc[-1]
-        ma60 = ta.trend.sma_indicator(close, 60).iloc[-1]
-        ma120 = ta.trend.sma_indicator(close, 120).iloc[-1]
-
-        c_now = float(close.iloc[-1])
-
-        # 【核心】現價 > 5條均線
-        if not (c_now > ma5 and c_now > ma10 and c_now > ma20 and c_now > ma60 and c_now > ma120):
-            return None
-
-        lookback = 40
-        resistance = high.iloc[-lookback:].max()
-        support = low.iloc[-lookback:].min()
-
-        if (resistance - support) / support > 0.30: return None
-
-        distance = (c_now - support) / support
-
-        if not (-0.02 <= distance <= 0.05): return None
-
-        # 檢查短均線糾結
-        ma_values = [ma5, ma10, ma20]
-        if (max(ma_values) - min(ma_values)) / min(ma_values) > 0.10: return None
-
-        return {
-            "股票": ticker,
-            "現價": round(c_now, 2),
-            "支撐(OB)": round(support, 2),
-            "距離支撐": f"{round(distance*100,1)}%",
-            "成交量(千)": int(vol_today / 1000),
-            "狀態": "回測支撐 🛡️"
-        }
-    except Exception:
-        return None
-
-# -------------------------------------------------
-# 策略三：爆量回檔 (洗盤)
-# -------------------------------------------------
-def strategy_washout_rebound(ticker):
-    try:
-        df = download_daily(ticker)
-        if len(df) < 125: return None
-
-        close, open_p, volume = df["Close"], df["Open"], df["Volume"]
-        vol_today = float(volume.iloc[-1])
-        
-        if vol_today < 500_000: return None
-
-        ma5 = ta.trend.sma_indicator(close, 5)
-        ma10 = ta.trend.sma_indicator(close, 10)
-        ma20 = ta.trend.sma_indicator(close, 20)
-        ma60 = ta.trend.sma_indicator(close, 60)
-        ma120 = ta.trend.sma_indicator(close, 120)
-
-        # 變數
-        c_prev = close.iloc[-2]
-        o_prev = open_p.iloc[-2]
-        v_prev = float(volume.iloc[-2])
-        v_prev_2 = float(volume.iloc[-3])
-        
-        c_now = float(close.iloc[-1])
-        
-        # 取得今日均線數值
-        ma5_now = ma5.iloc[-1]
-        ma10_now = ma10.iloc[-1]
-        ma20_now = ma20.iloc[-1]
-        ma60_now = ma60.iloc[-1]
-        ma120_now = ma120.iloc[-1]
-
-        # === 條件 A: 昨日增量黑K 且 守住MA5 ===
-        if c_prev >= o_prev: return None # 必須黑K
-        if v_prev <= v_prev_2: return None # 量 > 前日量
-        if c_prev < ma5.iloc[-2]: return None # 昨收要守 MA5
-
-        # === 條件 B: 今日量縮 且 續守MA5 ===
-        if c_now < ma5_now: return None # 今收要守 MA5
-        if vol_today >= v_prev: return None # 量 < 昨日量
-
-        # === 條件 C: 【核心】現價 > 5條均線 ===
-        if not (c_now > ma5_now and c_now > ma10_now and c_now > ma20_now and c_now > ma60_now and c_now > ma120_now):
-            return None
-
-        return {
-            "股票": ticker,
-            "現價": round(c_now, 2),
-            "成交量(千)": int(vol_today / 1000),
-            "縮量比": f"{round((vol_today/v_prev)*100, 1)}%",
-            "狀態": "強勢洗盤 🛁"
-        }
-    except Exception:
-        return None
-
-# -------------------------------------------------
-# 策略四：日線盤整突破
-# -------------------------------------------------
-def strategy_consolidation(ticker):
-    try:
-        df = download_daily(ticker)
-        if len(df) < 130: return None
-
-        close, open_p, high, volume = df["Close"], df["Open"], df["High"], df["Volume"]
-        vol_today = float(volume.iloc[-1])
-        
-        if vol_today < 500_000: return None
-
-        c_now = float(close.iloc[-1])
-        
-        ma5  = ta.trend.sma_indicator(close, 5).iloc[-1]
-        ma10 = ta.trend.sma_indicator(close, 10).iloc[-1]
-        ma20 = ta.trend.sma_indicator(close, 20).iloc[-1]
-        ma60 = ta.trend.sma_indicator(close, 60).iloc[-1]
-        ma120 = ta.trend.sma_indicator(close, 120).iloc[-1]
-        
-        # 【核心】現價 > 5條均線
-        if not (c_now > ma5 and c_now > ma10 and c_now > ma20 and c_now > ma60 and c_now > ma120):
-            return None
-
-        # 短線均線糾結 (5, 10, 20)
-        ma_vals = [ma5, ma10, ma20]
-        if (max(ma_vals) - min(ma_vals)) / c_now > 0.06: return None
-
-        resistance = float(high.iloc[:-1].tail(20).max())
-        if c_now <= resistance: return None
-
-        vol_ma5 = float(volume.rolling(5).mean().iloc[-2])
-        if vol_today < vol_ma5 * 1.5: return None
-        
-        if c_now < float(open_p.iloc[-1]): return None
-
-        return {
-            "股票": ticker,
-            "現價": round(c_now, 2),
-            "突破價": round(resistance, 2),
-            "狀態": "帶量突破 📦"
-        }
-    except Exception:
-        return None
-
-# -------------------------------------------------
-# 策略集合
-# -------------------------------------------------
 STRATEGIES = {
     "🚀 SMC 箱體突破": strategy_smc_breakout,
     "🛡️ SMC 回測支撐": strategy_smc_support,
@@ -319,6 +136,12 @@ st.sidebar.header("策略選擇")
 selected = [k for k in STRATEGIES if st.sidebar.checkbox(k, True)]
 
 # -------------------------------------------------
+# 回測期間選擇
+# -------------------------------------------------
+period_option = st.sidebar.radio("回測區間", ["3M", "6M"])
+SELECTED_PERIOD = "6mo" if period_option == "6M" else "3mo"
+
+# -------------------------------------------------
 # 執行掃描
 # -------------------------------------------------
 if st.button("開始掃描", type="primary"):
@@ -334,8 +157,8 @@ if st.button("開始掃描", type="primary"):
         
         progress_bar = st.progress(0)
         status_text = st.empty()
-        
         total = len(tickers)
+        
         for i, t in enumerate(tickers):
             progress_bar.progress((i + 1) / total)
             status_text.text(f"掃描中 ({i+1}/{total}): {t}")
@@ -343,7 +166,13 @@ if st.button("開始掃描", type="primary"):
             for k in selected:
                 r = STRATEGIES[k](t)
                 if r:
+                    # 回測資料
+                    df_bt = download_daily(t, period=SELECTED_PERIOD)
+                    signal_idx = len(df_bt) - 1
+                    success = calc_signal_performance(df_bt, signal_idx)
+                    
                     r["策略"] = k
+                    r["成功"] = success
                     result[k].append(r)
         
         progress_bar.empty()
@@ -358,3 +187,24 @@ if st.button("開始掃描", type="primary"):
         
         if not has_data:
             st.info("掃描完成，但沒有符合條件的股票。（建議放寬濾網或檢查掃描數量）")
+
+        # -------------------------------------------------
+        # 策略績效統計
+        # -------------------------------------------------
+        st.subheader("📊 策略績效統計（訊號後 10 日 +3%）")
+        all_rows = []
+        for k in selected:
+            all_rows.extend(result[k])
+
+        if all_rows:
+            df_all = pd.DataFrame(all_rows)
+            stats = (
+                df_all.groupby("策略")["成功"]
+                .agg(
+                    出手次數="count",
+                    成功次數="sum",
+                    勝率=lambda x: f"{(x.mean()*100):.1f}%"
+                )
+                .reset_index()
+            )
+            st.dataframe(stats, use_container_width=True)
