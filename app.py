@@ -5,15 +5,14 @@ import ta
 import requests
 import warnings
 import time
-import random # 引入 random 以產生隨機延遲
 
 warnings.filterwarnings("ignore")
 
 # -------------------------------------------------
 # 頁面設定
 # -------------------------------------------------
-st.set_page_config(page_title="股票策略篩選器（外資直讀修正版）", layout="wide")
-st.title("📈 股票策略篩選器（外資直讀修正版）")
+st.set_page_config(page_title="股票策略篩選器（極速連結版）", layout="wide")
+st.title("📈 股票策略篩選器（極速連結版）")
 
 st.markdown("""
 ---
@@ -24,74 +23,20 @@ st.markdown("""
 * **🛑 停損**：實體跌破 5MA
 * **🎯 停利**：風險報酬比 **1 : 1.5**
 
-**籌碼數據：**
-* 自動抓取 **外資今日** 與 **外資近5日** 買賣超張數。
-* **⚠️ 注意：** 為防止被鎖 IP，掃描速度會稍微放慢，請耐心等待。
-
 ※ 全策略皆過濾：今日成交量 > 500 張
 ---
 """)
 
 # -------------------------------------------------
-# === 核心：抓取外資買賣超 (防擋機制版) ===
+# 輔助：產生外資連結
 # -------------------------------------------------
-# 注意：這裡不使用 st.cache_data，因為短時間大量請求容易被 cache 機制干擾或被擋
-def get_chip_data(ticker):
-    """
-    抓取 Yahoo 股市 API，回傳 (今日外資張數, 近5日外資張數)
-    """
-    try:
-        # 1. 隨機延遲 0.3 ~ 0.7 秒，模擬人類行為，這是解決 "全是0" 的關鍵
-        time.sleep(random.uniform(0.3, 0.7))
-        
-        # 2. 處理代號
-        symbol = ticker.split('.')[0]
-        
-        # 3. 偽裝 Header (非常重要)
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Referer": "https://tw.stock.yahoo.com/",
-            "Accept": "application/json"
-        }
-        
-        url = f"https://tw.stock.yahoo.com/_td-stock/api/resource/StockServices.institutionalTrading;symbol={symbol}"
-        r = requests.get(url, headers=headers, timeout=10)
-        
-        # 如果被擋 (429 Too Many Requests 或 403 Forbidden)，回傳 None
-        if r.status_code != 200:
-            return "N/A", "N/A"
-
-        js = r.json()
-
-        if not js.get("data"):
-            return 0, 0
-
-        # --- 解析今日數據 ---
-        d_today = js["data"][0]
-        # 買進 - 賣出 (股數) -> 轉張數 (/1000)
-        today_net = (int(d_today["foreignInvestors"]["buy"]) - int(d_today["foreignInvestors"]["sell"])) // 1000
-        
-        # --- 解析近5日數據 ---
-        data_5d = js["data"][:5]
-        tot_5d = 0
-        for d in data_5d:
-            net = int(d["foreignInvestors"]["buy"]) - int(d["foreignInvestors"]["sell"])
-            tot_5d += net
-        
-        tot_5d = tot_5d // 1000 
-
-        return today_net, tot_5d
-
-    except Exception as e:
-        # print(f"Error scraping {ticker}: {e}") # debug用
-        return 0, 0
-
 def get_chip_link(ticker):
+    # 處理代號: 2330.TW -> 2330
     code = ticker.split('.')[0]
     return f"https://tw.stock.yahoo.com/quote/{code}/institutional-trading"
 
 # -------------------------------------------------
-# 股票清單
+# 股票清單 (回傳 字典: 代碼->名稱)
 # -------------------------------------------------
 @st.cache_data(ttl=86400)
 def get_all_tw_tickers():
@@ -109,7 +54,8 @@ def get_all_tw_tickers():
                 if len(data) >= 2:
                     code = data[0]
                     name = data[1]
-                    if code.isdigit() and len(code) == 4:
+                    # 允許 4碼(個股) 或 5碼(ETF)
+                    if code.isdigit() and (len(code) == 4 or len(code) == 5):
                         suffix = ".TWO" if mode == "4" else ".TW"
                         stock_map[f"{code}{suffix}"] = name
         except Exception:
@@ -492,16 +438,11 @@ if st.button("開始掃描", type="primary"):
         for i, t in enumerate(tickers):
             progress_bar.progress((i + 1) / total)
             name = stock_map.get(t, t)
-            status_text.text(f"掃描中 ({i+1}/{total}): {t} {name} (讀取外資中...)")
+            status_text.text(f"掃描中 ({i+1}/{total}): {t} {name}")
             
             for k in selected:
                 r = STRATEGIES[k](t, name, backtest_period)
                 if r:
-                    # 只有符合策略時，才去抓外資 (含延遲與偽裝)
-                    today, d5 = get_chip_data(t)
-                    r["外資今日(張)"] = today
-                    r["外資5日(張)"] = d5
-                    
                     r["策略"] = k
                     result[k].append(r)
         
@@ -517,7 +458,7 @@ if st.button("開始掃描", type="primary"):
                 df_res = pd.DataFrame(result[k])
                 
                 # 欄位排序
-                base_cols = ["代號", "名稱", "現價", "外資今日(張)", "外資5日(張)", "停損(5MA)", "停利(1:1.5)", "外資詳情"]
+                base_cols = ["代號", "名稱", "現價", "停損(5MA)", "停利(1:1.5)", "外資詳情"]
                 
                 if "回測勝率" in df_res.columns:
                     target_cols = base_cols + ["回測勝率", "平均獲利", "總交易"]
@@ -526,6 +467,7 @@ if st.button("開始掃描", type="primary"):
                 
                 other_cols = [c for c in df_res.columns if c not in target_cols]
                 
+                # 顯示表格並設定超連結
                 st.dataframe(
                     df_res[target_cols + other_cols], 
                     use_container_width=True,
