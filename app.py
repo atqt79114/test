@@ -5,14 +5,15 @@ import ta
 import requests
 import warnings
 import time
+import random # 引入 random 以產生隨機延遲
 
 warnings.filterwarnings("ignore")
 
 # -------------------------------------------------
 # 頁面設定
 # -------------------------------------------------
-st.set_page_config(page_title="股票策略篩選器（外資數據直讀版）", layout="wide")
-st.title("📈 股票策略篩選器（外資數據直讀版）")
+st.set_page_config(page_title="股票策略篩選器（外資直讀修正版）", layout="wide")
+st.title("📈 股票策略篩選器（外資直讀修正版）")
 
 st.markdown("""
 ---
@@ -24,55 +25,70 @@ st.markdown("""
 * **🎯 停利**：風險報酬比 **1 : 1.5**
 
 **籌碼數據：**
-* 直接讀取 **外資今日** 與 **外資近5日** 買賣超張數 (非連結)。
+* 自動抓取 **外資今日** 與 **外資近5日** 買賣超張數。
+* **⚠️ 注意：** 為防止被鎖 IP，掃描速度會稍微放慢，請耐心等待。
 
 ※ 全策略皆過濾：今日成交量 > 500 張
 ---
 """)
 
 # -------------------------------------------------
-# === 核心：抓取外資買賣超 (直接讀取數值) ===
+# === 核心：抓取外資買賣超 (防擋機制版) ===
 # -------------------------------------------------
-@st.cache_data(ttl=3600)
+# 注意：這裡不使用 st.cache_data，因為短時間大量請求容易被 cache 機制干擾或被擋
 def get_chip_data(ticker):
     """
     抓取 Yahoo 股市 API，回傳 (今日外資張數, 近5日外資張數)
     """
     try:
-        # 1. 處理代號: 將 2330.TW 或 2330.TWO 轉為 2330
+        # 1. 隨機延遲 0.3 ~ 0.7 秒，模擬人類行為，這是解決 "全是0" 的關鍵
+        time.sleep(random.uniform(0.3, 0.7))
+        
+        # 2. 處理代號
         symbol = ticker.split('.')[0]
         
-        # 2. 呼叫 Yahoo 內部 API
+        # 3. 偽裝 Header (非常重要)
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Referer": "https://tw.stock.yahoo.com/",
+            "Accept": "application/json"
+        }
+        
         url = f"https://tw.stock.yahoo.com/_td-stock/api/resource/StockServices.institutionalTrading;symbol={symbol}"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        r = requests.get(url, headers=headers, timeout=3)
+        r = requests.get(url, headers=headers, timeout=10)
+        
+        # 如果被擋 (429 Too Many Requests 或 403 Forbidden)，回傳 None
+        if r.status_code != 200:
+            return "N/A", "N/A"
+
         js = r.json()
 
-        # 3. 檢查是否有資料
         if not js.get("data"):
             return 0, 0
 
         # --- 解析今日數據 ---
-        # data[0] 通常是最新的一天
         d_today = js["data"][0]
-        # 計算買賣超 (股數) -> 轉張數 (/1000)
+        # 買進 - 賣出 (股數) -> 轉張數 (/1000)
         today_net = (int(d_today["foreignInvestors"]["buy"]) - int(d_today["foreignInvestors"]["sell"])) // 1000
         
         # --- 解析近5日數據 ---
-        # 取前5筆 (API通常是倒序，最新的在前面)
         data_5d = js["data"][:5]
         tot_5d = 0
         for d in data_5d:
             net = int(d["foreignInvestors"]["buy"]) - int(d["foreignInvestors"]["sell"])
             tot_5d += net
         
-        tot_5d = tot_5d // 1000 # 轉張數
+        tot_5d = tot_5d // 1000 
 
         return today_net, tot_5d
 
-    except Exception:
-        # 發生錯誤或抓不到時回傳 0
+    except Exception as e:
+        # print(f"Error scraping {ticker}: {e}") # debug用
         return 0, 0
+
+def get_chip_link(ticker):
+    code = ticker.split('.')[0]
+    return f"https://tw.stock.yahoo.com/quote/{code}/institutional-trading"
 
 # -------------------------------------------------
 # 股票清單
@@ -185,6 +201,7 @@ def run_backtest(df, strategy_type, months):
                 v_prev = volume.iloc[i-1]
                 v_prev_2 = volume.iloc[i-2]
                 ma5_prev = ma5.iloc[i-1]
+                
                 cond_prev = (c_prev < o_prev) and (v_prev > v_prev_2) and (c_prev >= ma5_prev)
                 cond_curr = (volume.iloc[i] < v_prev) and (c_curr >= ma5_curr)
                 if cond_prev and cond_curr: signal = True
@@ -255,6 +272,7 @@ def strategy_smc_breakout(ticker, name, backtest_months):
             **rr_data,
             "壓力(BSL)": round(resistance, 2),
             "成交量(千)": int(vol_today / 1000),
+            "外資詳情": get_chip_link(ticker),
             "狀態": "倍量突破 🚀"
         }
     except: return None
@@ -302,6 +320,7 @@ def strategy_smc_support(ticker, name, backtest_months):
             **rr_data,
             "支撐(OB)": round(support, 2),
             "成交量(千)": int(vol_today / 1000),
+            "外資詳情": get_chip_link(ticker),
             "狀態": "回測支撐 🛡️"
         }
     except: return None
@@ -353,6 +372,7 @@ def strategy_washout_rebound(ticker, name, backtest_months):
             **bt_res,
             "成交量(千)": int(vol_today / 1000),
             "縮量比": f"{round((vol_today/v_prev)*100, 1)}%",
+            "外資詳情": get_chip_link(ticker),
             "狀態": "強勢洗盤 🛁"
         }
     except: return None
@@ -398,7 +418,8 @@ def strategy_consolidation(ticker, name, backtest_months):
             "現價": round(c_now, 2),
             **rr_data,
             **bt_res,
-            "狀態": "帶量突破 📦"
+            "狀態": "帶量突破 📦",
+            "外資詳情": get_chip_link(ticker)
         }
     except: return None
 
@@ -422,7 +443,6 @@ if source == "手動":
     raw = st.sidebar.text_area("股票代碼", "2330.TW, 2317.TW")
     tickers = [x.strip() for x in raw.split(",") if x.strip()]
     
-    # 嘗試載入名稱對照表
     full_map = st.session_state.get("stock_map", {})
     if not full_map:
         with st.spinner("載入名稱庫..."):
@@ -472,12 +492,12 @@ if st.button("開始掃描", type="primary"):
         for i, t in enumerate(tickers):
             progress_bar.progress((i + 1) / total)
             name = stock_map.get(t, t)
-            status_text.text(f"掃描中 ({i+1}/{total}): {t} {name}")
+            status_text.text(f"掃描中 ({i+1}/{total}): {t} {name} (讀取外資中...)")
             
             for k in selected:
                 r = STRATEGIES[k](t, name, backtest_period)
                 if r:
-                    # === 只有符合策略時才抓取外資數據 ===
+                    # 只有符合策略時，才去抓外資 (含延遲與偽裝)
                     today, d5 = get_chip_data(t)
                     r["外資今日(張)"] = today
                     r["外資5日(張)"] = d5
@@ -497,7 +517,7 @@ if st.button("開始掃描", type="primary"):
                 df_res = pd.DataFrame(result[k])
                 
                 # 欄位排序
-                base_cols = ["代號", "名稱", "現價", "外資今日(張)", "外資5日(張)", "停損(5MA)", "停利(1:1.5)"]
+                base_cols = ["代號", "名稱", "現價", "外資今日(張)", "外資5日(張)", "停損(5MA)", "停利(1:1.5)", "外資詳情"]
                 
                 if "回測勝率" in df_res.columns:
                     target_cols = base_cols + ["回測勝率", "平均獲利", "總交易"]
@@ -505,7 +525,16 @@ if st.button("開始掃描", type="primary"):
                     target_cols = base_cols
                 
                 other_cols = [c for c in df_res.columns if c not in target_cols]
-                st.dataframe(df_res[target_cols + other_cols], use_container_width=True)
+                
+                st.dataframe(
+                    df_res[target_cols + other_cols], 
+                    use_container_width=True,
+                    column_config={
+                        "外資詳情": st.column_config.LinkColumn(
+                            "外資詳情", display_text="查看數據"
+                        )
+                    }
+                )
         
         if not has_data:
             st.info("掃描完成，但沒有符合條件的股票。")
