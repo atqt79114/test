@@ -1,269 +1,242 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import ta
-import requests
-import warnings
-import time
 import numpy as np
-
+import ta
+import datetime
+import warnings
 warnings.filterwarnings("ignore")
 
-# -------------------------------------------------
-# 頁面設定
-# -------------------------------------------------
-st.set_page_config(page_title="股票策略篩選器（強化進階版）", layout="wide")
-st.title("📈 股票策略篩選器（強化速度 + 回測 + 成本版）")
+# ----------------------------
+# Streamlit 設定
+# ----------------------------
+st.set_page_config(page_title="策略選股 + 回測整合版", layout="wide")
+st.title("📈 股票策略掃描＋回測（含停利 1:1.5）")
 
-# -------------------------------------------------
-# ▼ 全域參數
-# -------------------------------------------------
-MIN_VOL = 500_000      
-TX_FEE = 0.001425      
-TX_TAX = 0.003         
-RR = 1.5              
+MIN_VOL = 500_000  
+RR = 1.5  # 停利 RR 比率 1:1.5
 
+# ----------------------------
+# 停利 / 停損模型
+# ----------------------------
 
-# -------------------------------------------------
-# 股票清單
-# -------------------------------------------------
-@st.cache_data(ttl=86400)
-def get_all_tw_tickers():
-    headers = {"User-Agent": "Mozilla/5.0"}
-    tickers = []
-    
-    for mode in ["2", "4"]:
-        url = f"https://isin.twse.com.tw/isin/C_public.jsp?strMode={mode}"
-        r = requests.get(url, headers=headers, verify=False, timeout=10)
-        df = pd.read_html(r.text)[0].iloc[1:]
-        
-        for item in df[0]:
-            code = str(item).split()[0]
-            if code.isdigit() and len(code) == 4:
-                if mode == "4":
-                    tickers.append(f"{code}.TWO")
-                else:
-                    tickers.append(f"{code}.TW")
-            
-    return sorted(set(tickers))
-
-
-# -------------------------------------------------
-# ★ Yahoo Finance 批次下載加速
-# -------------------------------------------------
-@st.cache_data(ttl=600)
-def batch_download(tickers):
-    df = yf.download(
-        tickers, 
-        period="2y", 
-        interval="1d", 
-        group_by="ticker",
-        progress=False
-    )
-    return df
-
-
-def extract(df_batch, ticker):
-    df = df_batch[ticker].copy()
-    df.columns = df.columns.str.capitalize()
-    return df
-
-
-# -------------------------------------------------
-# ★ 停損停利計算函式
-# -------------------------------------------------
-def get_exit_prices(entry, ma5_val):
-
-    sl = ma5_val                                    # 停損位
-    risk = entry - sl                               # 風險
+def compute_sl_tp(entry_price, ma_value, rr=1.5):
+    sl = ma_value
+    risk = entry_price - sl
 
     if risk <= 0:
-        risk = entry * 0.005                        # 0.5% safety
+        risk = entry_price * 0.003  # fallback
 
-    tp = entry + RR * risk                          # 目標價
-
+    tp = entry_price + rr * risk
     return sl, tp
 
 
-# -------------------------------------------------
-# ★ 回測引擎（加入 TP、成本、真實化）
-# -------------------------------------------------
-def run_backtest(df, strategy_key, months):
+# ----------------------------
+# 回測引擎（核心）
+# ----------------------------
+def run_backtest(df, strategy_func, months=6):
 
-    size = months * 22                              
-    if len(df) < size + 200:
-        return None
+    df = df.copy()
+
+    if len(df) < 200:
+        return {"勝率": "N/A", "平均%": "N/A", "次數": 0}
+
+    start_i = len(df) - int(months * 22)
+    if start_i < 150:
+        start_i = 150
 
     close = df["Close"]
     high = df["High"]
-    low  = df["Low"]
-    vol  = df["Volume"]
+    volume = df["Volume"]
+    ma5 = ta.trend.sma_indicator(close, 5)
 
-    ma5  = ta.trend.sma_indicator(close, 5)
-    ma10 = ta.trend.sma_indicator(close, 10)
-    ma20 = ta.trend.sma_indicator(close, 20)
-    ma60 = ta.trend.sma_indicator(close, 60)
-    ma120= ta.trend.sma_indicator(close, 120)
-
-    trades = []
     in_pos = False
-    entry = None
-    sl = None
-    tp = None
+    entry = sl = tp = None
+    pnl_list = []
 
-    start = len(df) - size
-    if start < 150:
-        start = 150
-
-    for i in range(start, len(df)):
+    for i in range(start_i, len(df)):
 
         c = close.iloc[i]
+        h = high.iloc[i]
         m5 = ma5.iloc[i]
 
+        # --- 出場邏輯 ---
         if in_pos:
 
-            fee_cost = (entry * TX_FEE) + (entry * TX_TAX)
-            now_profit = (c - entry) / entry
+            # 停利：今日最高 >= TP
+            if h >= tp:
+                profit_pct = (tp - entry) / entry * 100
+                pnl_list.append(profit_pct)
+                in_pos = False
+                continue
 
-            # 出場—停損
+            # 停損：收盤跌破 5MA
             if c < m5:
-                trades.append(now_profit*100 - fee_cost*100)
-                in_pos = False
-                continue
-
-            # 出場—停利
-            if c >= tp:
-                pp = ((tp-entry)/entry)*100
-                trades.append(pp - fee_cost*100)
+                profit_pct = (c - entry) / entry * 100
+                pnl_list.append(profit_pct)
                 in_pos = False
                 continue
 
             continue
 
-        # 進場
-        cond = (
-            c > ma5.iloc[i] and
-            c > ma10.iloc[i] and
-            c > ma20.iloc[i] and
-            c > ma60.iloc[i] and
-            c > ma120.iloc[i]
-        )
-        if not cond: 
+        # --- 入場邏輯（依你策略） ---
+        try:
+            signal = strategy_func(df.iloc[: i+1])
+        except:
+            signal = False
+
+        if signal:
+            entry = c
+            sl, tp = compute_sl_tp(entry, m5)
+            in_pos = True
             continue
 
-        if vol.iloc[i] < MIN_VOL:
-            continue
+    if len(pnl_list) == 0:
+        return {"勝率": "0%", "平均%": "0%", "次數": 0}
 
-        sl, tp = get_exit_prices(c, m5)
-
-        in_pos = True
-        entry = c
-
-    if not trades:
-        return {"回測勝率":"無訊號","平均獲利":"0%","總交易":0}
-
-    wins = sum(1 for x in trades if x > 0)
+    wins = sum(1 for x in pnl_list if x > 0)
+    win_rate = round(wins / len(pnl_list) * 100, 1)
+    avg = round(np.mean(pnl_list), 2)
 
     return {
-        "回測勝率":f"{round(wins/len(trades)*100,1)}%",
-        "平均獲利":f"{round(np.mean(trades),2)}%",
-        "總交易":len(trades)
+        "勝率": f"{win_rate}%",
+        "平均%": f"{avg}%",
+        "次數": len(pnl_list)
     }
 
 
+# ----------------------------
+# 你的四大策略（完整保留）
+# ----------------------------
 
-# -------------------------------------------------
-# ★ 單股票策略
-# -------------------------------------------------
-def check_stock(df, months):
+def strategy_smc_breakout(df):
+    if len(df) < 60:
+        return False
 
-    close = df["Close"]
-    high  = df["High"]
-    low   = df["Low"]
-    vol   = df["Volume"]
+    close = df["Close"].iloc[-1]
+    prev_close = df["Close"].iloc[-2]
+    high = df["High"]
+    low = df["Low"]
+    volume = df["Volume"].iloc[-1]
 
-    ma5  = ta.trend.sma_indicator(close, 5).iloc[-1]
-    ma10 = ta.trend.sma_indicator(close, 10).iloc[-1]
-    ma20 = ta.trend.sma_indicator(close, 20).iloc[-1]
-    ma60 = ta.trend.sma_indicator(close, 60).iloc[-1]
-    ma120= ta.trend.sma_indicator(close, 120).iloc[-1]
+    hh = high.rolling(20).max().iloc[-2]
+    ll = low.rolling(20).min().iloc[-2]
 
-    c    = close.iloc[-1]
-    v    = vol.iloc[-1]
+    if volume < MIN_VOL:
+        return False
 
-    if v < MIN_VOL: 
-        return None
+    cond_break = prev_close <= hh and close > hh
+    cond_retest = low.iloc[-1] > hh * 0.995
 
-    if not (c > ma5 and c > ma10 and c > ma20 and c > ma60 and c > ma120):
-        return None
-
-    sl, tp = get_exit_prices(c, ma5)
-    back   = run_backtest(df, "", months)
-
-    return {
-        "現價":round(c,2),
-        "停損":round(sl,2),
-        "停利":round(tp,2),
-        **back
-    }
+    return cond_break or cond_retest
 
 
+def strategy_smc_support(df):
+    if len(df) < 60:
+        return False
 
-# -------------------------------------------------
+    close = df["Close"].iloc[-1]
+    prev_close = df["Close"].iloc[-2]
+    low = df["Low"]
+    volume = df["Volume"].iloc[-1]
+
+    ll = low.rolling(20).min().iloc[-2]
+
+    if volume < MIN_VOL:
+        return False
+
+    cond_hit = low.iloc[-1] <= ll * 1.005
+    cond_reject = close > prev_close
+
+    return cond_hit and cond_reject
+
+
+def strategy_washout(df):
+    if len(df) < 80:
+        return False
+
+    close = df["Close"].iloc[-1]
+    low = df["Low"].iloc[-1]
+    open_ = df["Open"].iloc[-1]
+    volume = df["Volume"].iloc[-1]
+
+    ma20 = ta.trend.sma_indicator(df["Close"], 20).iloc[-1]
+
+    cond_down = open_ > close
+    cond_recover = close > ma20
+    cond_vol = volume > df["Volume"].rolling(20).mean().iloc[-1] * 1.5
+
+    return cond_down and cond_recover and cond_vol
+
+
+def strategy_consolidation(df):
+    if len(df) < 150:
+        return False
+
+    close = df["Close"].iloc[-1]
+    high = df["High"]
+    low = df["Low"]
+    volume = df["Volume"].iloc[-1]
+
+    hh = high.rolling(40).max().iloc[-1]
+    ll = low.rolling(40).min().iloc[-1]
+
+    cond_range = (hh - ll) / ll < 0.08
+    cond_break = close > hh
+
+    if volume < MIN_VOL:
+        return False
+
+    return cond_range and cond_break
+
+
+STRATEGY_MAP = {
+    "SMC Breakout": strategy_smc_breakout,
+    "SMC Support": strategy_smc_support,
+    "Washout": strategy_washout,
+    "Consolidation": strategy_consolidation
+}
+
+
+# ----------------------------
 # UI
-# -------------------------------------------------
-st.sidebar.header("股票來源")
-mode = st.sidebar.radio("選擇方式",["手動","全市場"])
+# ----------------------------
+st.sidebar.header("設定")
 
-if mode=="手動":
-    raw = st.sidebar.text_area("輸入股票代碼：","2330.TW, 2317.TW")
-    tickers = [x.strip() for x in raw.split(",") if x.strip()]
+strategy_name = st.sidebar.selectbox(
+    "選擇策略", list(STRATEGY_MAP.keys())
+)
 
-else:
-    if "ALL" not in st.session_state:
-        st.session_state["ALL"] = get_all_tw_tickers()
+months = st.sidebar.radio(
+    "回測期間", [3, 6, 12], index=1, format_func=lambda x: f"{x} 個月"
+)
 
-    st.sidebar.write(f"快取清單：{len(st.session_state['ALL'])} 檔")
-    limit = st.sidebar.slider("掃描數量",50,2000,300)
-    tickers = st.session_state["ALL"][:limit]
+user_input = st.sidebar.text_area("輸入股票代碼（用逗號）", "2330.TW, 2317.TW")
+tickers = [x.strip() for x in user_input.split(",") if x.strip()]
 
+if st.button("開始執行 🚀"):
 
-period = st.sidebar.radio("回測期間",[3,6],format_func=lambda x:f"{x}個月")
-
-
-# -------------------------------------------------
-# 主程式執行
-# -------------------------------------------------
-if st.button("開始掃描 🚀"):
-
-    df_batch = batch_download(tickers)
-
-    results = []
-
+    result_list = []
     progress = st.progress(0)
-    status   = st.empty()
-    total    = len(tickers)
 
-    for i,t in enumerate(tickers):
+    df_batch = yf.download(tickers, period="2y", group_by="ticker", progress=False)
 
-        progress.progress((i+1)/total)
-        status.text(f"掃描： {i+1}/{total} → {t}")
+    for i, t in enumerate(tickers):
+        progress.progress((i+1)/len(tickers))
 
         try:
-            df = extract(df_batch,t)
-            r  = check_stock(df,period)
-            if r:
-                r["股票"]=t
-                results.append(r)
+            df = df_batch[t].copy()
         except:
             continue
 
-    progress.empty()
-    status.empty()
+        df = df.rename(columns=lambda x: x.capitalize())
 
-    if results:
-        df_show = pd.DataFrame(results)
-        st.dataframe(df_show,use_container_width=True)
+        strat_func = STRATEGY_MAP[strategy_name]
 
-    else:
-        st.warning("沒有符合條件股票。")
+        r = run_backtest(df, strat_func, months=months)
+        r["股票"] = t
+        result_list.append(r)
+
+    st.subheader("結果")
+    df_show = pd.DataFrame(result_list)
+    st.dataframe(df_show, use_container_width=True)
