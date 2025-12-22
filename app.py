@@ -35,40 +35,41 @@ st.markdown("""
 # -------------------------------------------------
 @st.cache_data(ttl=3600)
 def chip_today(ticker):
-    """抓取今日外資買賣超 (張數)"""
     try:
-        # 去除 .TW / .TWO
-        symbol = ticker.split('.')[0]
+        symbol = ticker.replace(".TW","").replace(".TWO","")
         url = f"https://tw.stock.yahoo.com/_td-stock/api/resource/StockServices.institutionalTrading;symbol={symbol}"
         r = requests.get(url, headers={"User-Agent":"Mozilla/5.0"}, timeout=5)
         js = r.json()
-
-        if not js.get("data"): return 0
         
+        if not js["data"]:
+            return 0
+
         d = js["data"][0]
-        # 買進 - 賣出 (股數) -> 轉成 張數
-        net_buy = (int(d["foreignInvestors"]["buy"]) - int(d["foreignInvestors"]["sell"])) / 1000
-        return int(net_buy)
+        return d["foreignInvestors"]["buy"] - d["foreignInvestors"]["sell"]
+
     except:
         return 0
 
+
 @st.cache_data(ttl=3600)
 def chip_5d(ticker):
-    """抓取近5日外資累計買賣超 (張數)"""
     try:
-        symbol = ticker.split('.')[0]
+        symbol = ticker.replace(".TW","").replace(".TWO","")
         url = f"https://tw.stock.yahoo.com/_td-stock/api/resource/StockServices.institutionalTrading;symbol={symbol}"
         r = requests.get(url, headers={"User-Agent":"Mozilla/5.0"}, timeout=5)
         js = r.json()
 
-        if not js.get("data"): return 0
+        if not js["data"]:
+            return 0
 
-        data = js["data"][:5] # 取最近5筆
+        data = js["data"][:5]
+
         tot = 0
         for d in data:
-            tot += int(d["foreignInvestors"]["buy"]) - int(d["foreignInvestors"]["sell"])
-        
-        return int(tot / 1000) # 轉張數
+            tot += d["foreignInvestors"]["buy"] - d["foreignInvestors"]["sell"]
+
+        return tot
+
     except:
         return 0
 
