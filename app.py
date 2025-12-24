@@ -12,8 +12,8 @@ warnings.filterwarnings("ignore")
 # -------------------------------------------------
 # 頁面設定
 # -------------------------------------------------
-st.set_page_config(page_title="股票策略篩選器（阿良優化版）", layout="wide")
-st.title("📈 股票策略篩選器（阿良優化版）")
+st.set_page_config(page_title="股票策略篩選器（週線無回測版）", layout="wide")
+st.title("📈 股票策略篩選器（週線無回測版）")
 
 # === 核心：詳細策略邏輯與免責聲明 ===
 st.markdown("""
@@ -144,7 +144,6 @@ def run_backtest(df, strategy_type, months):
         for i in range(start_idx, len(df) - 1):
             c_curr = close.iloc[i]; h_curr = high.iloc[i]; ma5_curr = ma5.iloc[i]
 
-            # 1. 出場檢查
             if in_position:
                 if h_curr >= target_price: 
                     trades.append((target_price - entry_price) / entry_price)
@@ -156,7 +155,6 @@ def run_backtest(df, strategy_type, months):
                     in_position = False; continue
                 continue
 
-            # 2. 進場基本濾網
             if not (c_curr > ma5_curr and c_curr > ma10.iloc[i] and c_curr > ma20.iloc[i] and 
                     c_curr > ma60.iloc[i]):
                 continue
@@ -165,17 +163,14 @@ def run_backtest(df, strategy_type, months):
             curr_sl = 0
 
             # === 策略邏輯 ===
-            
-            # A. SMC 訂單塊融合 (需成交量 > 500張)
             if strategy_type == "smc_merged":
-                if volume.iloc[i] > 500_000: # 加入成交量判斷
+                if volume.iloc[i] > 500_000:
                     lookback_p = 60
                     recent_low = low.iloc[i-lookback_p:i].min()
                     dist = (c_curr - recent_low) / c_curr
                     if 0 <= dist <= 0.05:
                         signal = True; curr_sl = recent_low
 
-            # 其他策略
             elif volume.iloc[i] > 500_000:
                 if strategy_type == "washout":
                     c_prev = close.iloc[i-1]; o_prev = open_p.iloc[i-1]
@@ -193,10 +188,6 @@ def run_backtest(df, strategy_type, months):
                 elif strategy_type == "smc_breakout":
                     res = high.iloc[i-41:i-1].max()
                     if c_curr > res and volume.iloc[i] > volume.iloc[i-1] * 2:
-                        signal = True; curr_sl = ma5_curr
-
-                elif strategy_type == "weekly":
-                    if volume.iloc[i] > vol_ma5.iloc[i-1] * 5:
                         signal = True; curr_sl = ma5_curr
 
             if signal:
@@ -225,14 +216,11 @@ def strategy_smc_merged(ticker, name, df, backtest_months):
         close = df["Close"]; low = df["Low"]; high = df["High"]; volume = df["Volume"]
         c_now = float(close.iloc[-1])
         
-        # === 1. 成交量濾網 (新增) ===
         if float(volume.iloc[-1]) < 500_000: return None
 
-        # 2. 趨勢濾網：只做長線多頭 (站上 60MA)
         ma60 = ta.trend.sma_indicator(close, 60).iloc[-1]
         if c_now < ma60: return None
 
-        # 3. 定義 OB
         lookback = 60
         bullish_ob = float(low.iloc[-lookback:].min())
         bearish_ob = float(high.iloc[-lookback:].max())
@@ -332,9 +320,10 @@ def strategy_weekly_breakout(ticker, name, df_daily, backtest_months):
         ma5_now = ma5.iloc[-1]; ma10_now = ma10.iloc[-1]; ma20_now = ma20.iloc[-1]
         if not (c_now > ma5_now and c_now > ma10_now and c_now > ma20_now): return None
         if v_now <= v_prev * 5: return None
-        bt_res = run_backtest(df_daily, "weekly", backtest_months)
-        rr = calculate_risk_reward(c_now, ma5_now, df_weekly.index[-1], timeframe="週")
-        return {"代號": ticker, "名稱": name, "現價": round(c_now, 2), **rr, **(bt_res or {}), "本週量(張)": int(v_now/1000), "爆量倍數": f"{round(v_now/v_prev, 1)}倍", "外資詳情": get_chip_link(ticker), "狀態": "週線爆量 🔥"}
+        
+        # === 移除回測 ===
+        rr = calculate_risk_reward(c_now, ma5_now, df_weekly.index[-1])
+        return {"代號": ticker, "名稱": name, "現價": round(c_now, 2), **rr, "本週量(張)": int(v_now/1000), "爆量倍數": f"{round(v_now/v_prev, 1)}倍", "外資詳情": get_chip_link(ticker), "狀態": "週線爆量 🔥"}
     except: return None
 
 # -------------------------------------------------
@@ -383,7 +372,7 @@ selected = [k for k in STRATEGIES if st.sidebar.checkbox(k, True)]
 
 st.sidebar.markdown("---")
 st.sidebar.header("📊 回測設定")
-st.sidebar.caption("※ 回測僅適用全部策略")
+st.sidebar.caption("※ 回測僅適用日線策略")
 backtest_period = st.sidebar.radio("回測區間", [3, 6, 12], format_func=lambda x: f"過去 {x} 個月")
 
 if st.button("開始掃描", type="primary"):
