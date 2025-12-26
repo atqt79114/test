@@ -319,7 +319,7 @@ def strategy_weekly_breakout(ticker, name, df_daily, backtest_months):
         c_now = float(close.iloc[-1]); v_now = float(volume.iloc[-1]); v_prev = float(volume.iloc[-2])
         ma5_now = ma5.iloc[-1]; ma10_now = ma10.iloc[-1]; ma20_now = ma20.iloc[-1]
         if not (c_now > ma5_now and c_now > ma10_now and c_now > ma20_now): return None
-        if v_now <= v_prev * 5: return None
+        if v_now <= v_prev * 2.8: return None
         
         # === 移除回測 ===
         rr = calculate_risk_reward(c_now, ma5_now, df_weekly.index[-1])
@@ -334,7 +334,7 @@ STRATEGIES = {
     "🚀 SMC 箱體突破": strategy_smc_breakout,
     "🛁 爆量回檔 (洗盤)": strategy_washout_rebound,
     "📦 日線盤整突破": strategy_consolidation,
-    "🔥 週線盤整突破 (爆量5倍)": strategy_weekly_breakout,
+    "🔥 週線盤整突破 (爆量2.8倍)": strategy_weekly_breakout,
 }
 
 # -------------------------------------------------
