@@ -38,7 +38,10 @@ st.markdown("""
 
 4. **📦 日線盤整突破**：日均線糾結帶量突破。
 
-5. **🔥 週線盤整突破**：週K站穩均線 + 本週爆量 5 倍。
+5. **🔥 週線盤整突破 (修正版)**：
+   * **趨勢**：週 K 線站穩 5、10、20 週均線。
+   * **動能**：**本週(預估)成交量 > 上週成交量 2.8 倍**。
+
 
 **💰 風險管理**：
 * SMC OB 策略：停損守 OB 下緣。
@@ -319,9 +322,10 @@ def strategy_weekly_breakout(ticker, name, df_daily, backtest_months):
         c_now = float(close.iloc[-1]); v_now = float(volume.iloc[-1]); v_prev = float(volume.iloc[-2])
         ma5_now = ma5.iloc[-1]; ma10_now = ma10.iloc[-1]; ma20_now = ma20.iloc[-1]
         if not (c_now > ma5_now and c_now > ma10_now and c_now > ma20_now): return None
+        
+        # === 修改點：改為 2.8 倍 ===
         if v_now <= v_prev * 2.8: return None
         
-        # === 移除回測 ===
         rr = calculate_risk_reward(c_now, ma5_now, df_weekly.index[-1])
         return {"代號": ticker, "名稱": name, "現價": round(c_now, 2), **rr, "本週量(張)": int(v_now/1000), "爆量倍數": f"{round(v_now/v_prev, 1)}倍", "外資詳情": get_chip_link(ticker), "狀態": "週線爆量 🔥"}
     except: return None
