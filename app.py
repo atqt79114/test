@@ -12,7 +12,7 @@ warnings.filterwarnings("ignore")
 # 頁面設定
 # -------------------------------------------------
 st.set_page_config(page_title="台股強勢策略篩選器", layout="wide")
-st.title("📈 台股強勢策略篩選器（量能與型態版）")
+st.title("📈 台股強勢策略篩選器")
 
 # === 核心：詳細策略邏輯與免責聲明 ===
 st.markdown("""
@@ -21,28 +21,22 @@ st.markdown("""
 **所有篩選結果僅供技術分析參考，不代表買賣建議。請務必嚴格執行停損，控制風險。**
 
 ---
-#### 💎 全策略共同核心：股價站上所有均線 (多頭排列)
-* **定義**：現價 > 5MA、10MA、20MA、60MA、120MA
-* **意義**：代表股價高於過去半年所有人的平均成本，上方無套牢賣壓，是強勢股的標準特徵。
+#### 🧱 硬性濾網：股價必須站上 120MA (半年線)
+所有日線策略皆已加入此條件，確保股票處於 **「長期多頭趨勢」**。
 
 #### 🧠 策略邏輯解析：
 
-1. **🛁 爆量回檔 (洗盤)**：
-   * **邏輯**：主力拉抬後故意不做價，讓短線客下車。
-   * **特徵**：昨日爆量收黑或長上影線（看似轉弱），但今日量縮且股價守住關鍵均線。
+1.  **🌀 布林通道中線 (回測支撐)**：
+    * **進場**：股價回測布林中線 (20MA) 附近，且長期均線向上。
+    * **停損**：跌破中線 3% 或下軌。
+    * **停利**：**觸碰布林通道上軌**。
 
-2. **📦 日線盤整突破**：
-   * **邏輯**：長時間的箱體整理後，出現帶量長紅突破壓力區。
-   * **特徵**：均線糾結後發散，成交量放大至 5日均量的 1.5 倍以上。
+2.  **🛁 爆量回檔 (洗盤)** & **📦 日線盤整突破**：
+    * 維持固定賺賠比 (1:1.5) 作為預設目標。
 
-3. **🔥 週線盤整突破 (大波段)**：
-   * **邏輯**：從週線格局看趨勢，過濾掉日線的雜訊。
-   * **特徵**：週 K 線站穩中長期週均線，且**本週(預估)成交量 > 上週成交量 2.8 倍** (攻擊訊號)。
+3.  **🔥 週線盤整突破**：
+    * 週 K 線站穩中長期週均線，且本週預估量爆發。
 
-**💰 風險管理**：
-* **停損設定**：建議守 5MA 或 10MA，或進場 K 棒低點。
-* **停利設定**：初步建議賺賠比 1:1，或沿 5MA 移動停利。
-* **基本過濾**：當日成交量 > 500 張。
 ---
 """)
 
@@ -99,23 +93,31 @@ def download_batch_data(tickers_batch):
     except Exception: return {}
 
 # -------------------------------------------------
-# 輔助：計算風控數據
+# 輔助：計算風控數據 (已更新：支援自訂停利價)
 # -------------------------------------------------
-def calculate_risk_reward(c_now, sl_price, date_now):
+def calculate_risk_reward(c_now, sl_price, date_now, custom_target=None):
     sl_price = round(sl_price, 2)
     risk = c_now - sl_price
     if risk <= 0: risk = c_now * 0.01 
-    target_price = round(c_now + (risk * 1.0), 2) # 1:1
+    
+    # 如果有指定停利價 (例如布林上軌)，就使用該價格
+    if custom_target:
+        target_price = round(custom_target, 2)
+        potential_profit = (target_price - c_now) / c_now
+    else:
+        # 否則預設 1:1.5
+        target_price = round(c_now + (risk * 1.5), 2) 
+        potential_profit = (risk * 1.5) / c_now
     
     return {
         "訊號日期": date_now.strftime('%Y-%m-%d'),
         "停損價(SL)": sl_price,
-        "停利價(1:1)": target_price,
-        "潛在獲利": f"{round((risk * 1.0 / c_now)*100, 1)}%"
+        "停利價(TP)": target_price,
+        "潛在獲利": f"{round(potential_profit*100, 1)}%"
     }
 
 # -------------------------------------------------
-# 核心：回測引擎 (已移除 SMC 邏輯)
+# 核心：回測引擎
 # -------------------------------------------------
 def run_backtest(df, strategy_type, months):
     try:
@@ -137,58 +139,73 @@ def run_backtest(df, strategy_type, months):
         ma10 = ta.trend.sma_indicator(close, 10)
         ma20 = ta.trend.sma_indicator(close, 20)
         ma60 = ta.trend.sma_indicator(close, 60)
+        ma120 = ta.trend.sma_indicator(close, 120)
+        
         vol_ma5 = volume.rolling(5).mean()
+        
+        # 布林通道
+        indicator_bb = ta.volatility.BollingerBands(close=close, window=20, window_dev=2)
+        bb_mavg = indicator_bb.bollinger_mavg()
+        bb_hband = indicator_bb.bollinger_hband()
 
         for i in range(start_idx, len(df) - 1):
-            c_curr = close.iloc[i]; h_curr = high.iloc[i]; ma5_curr = ma5.iloc[i]
-
+            c_curr = close.iloc[i]; h_curr = high.iloc[i]
+            
             # 持倉檢查
             if in_position:
+                # 停利檢查
                 if h_curr >= target_price: 
                     trades.append((target_price - entry_price) / entry_price)
                     in_position = False; continue
                 
-                # 一般策略守 5MA 或指定 SL
-                sl_trigger = ma5_curr
+                # 停損檢查
+                sl_trigger = stop_loss_price
                 if c_curr < sl_trigger:
                     trades.append((c_curr - entry_price) / entry_price)
                     in_position = False; continue
+                
+                # 如果是布林策略，每天更新停利價為當天的上軌 (動態停利)
+                if strategy_type == "bollinger_mid":
+                    target_price = bb_hband.iloc[i]
+                
                 continue
 
-            # 基本多頭排列過濾
-            if not (c_curr > ma5_curr and c_curr > ma10.iloc[i] and c_curr > ma20.iloc[i] and 
-                    c_curr > ma60.iloc[i]):
-                continue
-            
             signal = False
             curr_sl = 0
+            curr_tp = 0
 
-            # === 策略邏輯 (SMC 已移除) ===
-            # 基本成交量過濾
-            if volume.iloc[i] > 500_000:
-                
-                if strategy_type == "washout":
-                    c_prev = close.iloc[i-1]; o_prev = open_p.iloc[i-1]
-                    v_prev = volume.iloc[i-1]; v_prev_2 = volume.iloc[i-2]
-                    ma5_prev = ma5.iloc[i-1]
-                    # 昨日跌或黑K + 昨日爆量 + 今日量縮 + 今日站穩均線
-                    if (c_prev < o_prev) and (v_prev > v_prev_2) and (c_prev >= ma5_prev) and \
-                       (volume.iloc[i] < v_prev) and (c_curr >= ma5_curr):
-                        signal = True; curr_sl = ma5_curr
-                
-                elif strategy_type == "consolidation":
-                    res = high.iloc[i-21:i].max() # 過去20日高點
-                    # 突破 + 爆量 (1.5倍均量)
-                    if c_curr > res and volume.iloc[i] > vol_ma5.iloc[i-1] * 1.5:
-                        signal = True; curr_sl = ma5_curr
+            # === 策略邏輯 ===
+            
+            # 1. 布林通道中線策略
+            if strategy_type == "bollinger_mid":
+                mid = bb_mavg.iloc[i]
+                if abs(c_curr - mid) / mid <= 0.015 and c_curr > ma120.iloc[i]:
+                    if volume.iloc[i] > 500_000:
+                        signal = True
+                        curr_sl = mid * 0.97
+                        curr_tp = bb_hband.iloc[i] # 設定初始停利為當天上軌
+
+            # 2. 其他策略 (需 > 120MA)
+            elif (c_curr > ma5.iloc[i] and c_curr > ma10.iloc[i] and c_curr > ma20.iloc[i] and c_curr > ma60.iloc[i]):
+                if volume.iloc[i] > 500_000 and c_curr > ma120.iloc[i]:
+                    
+                    if strategy_type == "washout":
+                        c_prev = close.iloc[i-1]; o_prev = open_p.iloc[i-1]
+                        v_prev = volume.iloc[i-1]; v_prev_2 = volume.iloc[i-2]
+                        if (c_prev < o_prev) and (v_prev > v_prev_2) and (c_prev >= ma5.iloc[i-1]) and \
+                           (volume.iloc[i] < v_prev) and (c_curr >= ma5.iloc[i]):
+                            signal = True; curr_sl = ma5.iloc[i]; curr_tp = c_curr + (c_curr - curr_sl) * 1.5
+                    
+                    elif strategy_type == "consolidation":
+                        res = high.iloc[i-21:i].max() 
+                        if c_curr > res and volume.iloc[i] > vol_ma5.iloc[i-1] * 1.5:
+                            signal = True; curr_sl = ma5.iloc[i]; curr_tp = c_curr + (c_curr - curr_sl) * 1.5
 
             if signal:
                 in_position = True
                 entry_price = c_curr
                 stop_loss_price = curr_sl
-                risk = entry_price - stop_loss_price
-                if risk <= 0: risk = entry_price * 0.01
-                target_price = entry_price + (risk * 1.0)
+                target_price = curr_tp
 
         if not trades: return {"回測勝率": "無訊號", "平均獲利": "0%", "總交易": 0}
         win_count = sum(1 for p in trades if p > 0)
@@ -200,8 +217,46 @@ def run_backtest(df, strategy_type, months):
     except: return None
 
 # -------------------------------------------------
-# 策略函式 (已移除 SMC)
+# 策略函式
 # -------------------------------------------------
+
+def strategy_bollinger_mid(ticker, name, df, backtest_months):
+    try:
+        if len(df) < 125: return None
+        close = df["Close"]; volume = df["Volume"]
+        c_now = float(close.iloc[-1])
+        
+        if float(volume.iloc[-1]) < 500_000: return None
+        
+        indicator_bb = ta.volatility.BollingerBands(close=close, window=20, window_dev=2)
+        bb_mavg = indicator_bb.bollinger_mavg()
+        bb_hband = indicator_bb.bollinger_hband()
+        
+        mid_now = float(bb_mavg.iloc[-1])
+        upper_now = float(bb_hband.iloc[-1]) # 當前上軌
+        ma120 = ta.trend.sma_indicator(close, 120).iloc[-1]
+
+        # 邏輯：股價在中線附近
+        if abs(c_now - mid_now) / mid_now > 0.015: return None
+        if c_now < ma120: return None
+        if mid_now < float(bb_mavg.iloc[-2]): return None
+
+        bt_res = run_backtest(df, "bollinger_mid", backtest_months)
+        
+        sl_price = mid_now * 0.97
+        
+        # === 修改點：傳入上軌作為停利價 ===
+        rr = calculate_risk_reward(c_now, sl_price, df.index[-1], custom_target=upper_now)
+        
+        return {
+            "代號": ticker, "名稱": name, "現價": round(c_now, 2), 
+            "布林中線": round(mid_now, 2), 
+            "布林上軌": round(upper_now, 2),
+            **rr, **(bt_res or {}), 
+            "外資詳情": get_chip_link(ticker), 
+            "狀態": "中線支撐 🌀"
+        }
+    except Exception: return None
 
 def strategy_washout_rebound(ticker, name, df, backtest_months):
     try:
@@ -217,7 +272,6 @@ def strategy_washout_rebound(ticker, name, df, backtest_months):
         c_prev = float(close.iloc[-2]); o_prev = float(open_p.iloc[-2])
         v_curr = float(volume.iloc[-1]); v_prev = float(volume.iloc[-2]); v_prev_2 = float(volume.iloc[-3])
         
-        # 洗盤邏輯：昨天黑K且量增，今天量縮但價穩
         if c_prev >= o_prev: return None 
         if v_prev <= v_prev_2: return None 
         if c_prev < ma5.iloc[-2]: return None 
@@ -242,21 +296,17 @@ def strategy_consolidation(ticker, name, df, backtest_months):
         ma60 = ta.trend.sma_indicator(close, 60).iloc[-1]
         ma120 = ta.trend.sma_indicator(close, 120).iloc[-1]
         
-        # 多頭排列
         if not (c_now > ma5 and c_now > ma10 and c_now > ma20 and c_now > ma60 and c_now > ma120): return None
         
-        # 均線糾結 (5, 10, 20MA 差異不大)
         ma_vals = [ma5, ma10, ma20]
         if (max(ma_vals) - min(ma_vals)) / c_now > 0.06: return None
         
-        # 突破過去20天高點
         resistance = float(high.iloc[:-1].tail(20).max())
         if c_now <= resistance: return None
         
-        # 爆量
         vol_ma5 = float(volume.rolling(5).mean().iloc[-2])
         if float(volume.iloc[-1]) < vol_ma5 * 1.5: return None
-        if c_now < float(open_p.iloc[-1]): return None # 收紅
+        if c_now < float(open_p.iloc[-1]): return None 
         
         bt_res = run_backtest(df, "consolidation", backtest_months)
         rr = calculate_risk_reward(c_now, ma5, df.index[-1])
@@ -272,10 +322,7 @@ def strategy_weekly_breakout(ticker, name, df_daily, backtest_months):
         c_now = float(close.iloc[-1]); v_now = float(volume.iloc[-1]); v_prev = float(volume.iloc[-2])
         ma5_now = ma5.iloc[-1]; ma10_now = ma10.iloc[-1]; ma20_now = ma20.iloc[-1]
         
-        # 站穩週均線
         if not (c_now > ma5_now and c_now > ma10_now and c_now > ma20_now): return None
-        
-        # 爆量 2.8 倍
         if v_now <= v_prev * 2.8: return None
         
         rr = calculate_risk_reward(c_now, ma5_now, df_weekly.index[-1])
@@ -283,9 +330,10 @@ def strategy_weekly_breakout(ticker, name, df_daily, backtest_months):
     except: return None
 
 # -------------------------------------------------
-# 策略集合 (已更新)
+# 策略集合
 # -------------------------------------------------
 STRATEGIES = {
+    "🌀 布林通道中線 (回測支撐)": strategy_bollinger_mid,
     "🛁 爆量回檔 (洗盤)": strategy_washout_rebound,
     "📦 日線盤整突破": strategy_consolidation,
     "🔥 週線盤整突破 (爆量2.8倍)": strategy_weekly_breakout,
@@ -298,7 +346,7 @@ st.sidebar.header("股票來源")
 source = st.sidebar.radio("選擇", ["手動", "全市場"])
 
 if source == "手動":
-    raw = st.sidebar.text_area("股票代碼", "2330.TW, 2317.TW, 2454.TW")
+    raw = st.sidebar.text_area("股票代碼", "2330.TW, 2317.TW, 2603.TW")
     tickers = [x.strip() for x in raw.split(",") if x.strip()]
     full_map = st.session_state.get("stock_map", {})
     if not full_map:
@@ -375,15 +423,18 @@ if st.button("開始掃描", type="primary"):
                 st.subheader(f"📊 {k}")
                 df_res = pd.DataFrame(result[k])
                 
-                # 簡化後的欄位顯示邏輯 (移除OB相關欄位)
-                base_cols = ["代號", "名稱", "現價", "停損價(SL)", "停利價(1:1)", "外資詳情"]
+                # 欄位顯示名稱更新：停利價(TP)
+                base_cols = ["代號", "名稱", "現價", "停損價(SL)", "停利價(TP)", "外資詳情"]
                 
-                if "爆量倍數" in df_res.columns:
-                    target_cols = ["代號", "名稱", "現價", "本週量(張)", "爆量倍數", "停損價(SL)", "停利價(1:1)", "外資詳情"]
-                elif "回測勝率" in df_res.columns:
-                    target_cols = base_cols + ["回測勝率", "平均獲利", "總交易"]
+                if "布林中線" in df_res.columns:
+                     target_cols = ["代號", "名稱", "現價", "布林中線", "布林上軌", "停損價(SL)", "停利價(TP)", "外資詳情"]
+                elif "爆量倍數" in df_res.columns:
+                    target_cols = ["代號", "名稱", "現價", "本週量(張)", "爆量倍數", "停損價(SL)", "停利價(TP)", "外資詳情"]
                 else:
                     target_cols = base_cols
+                
+                if "回測勝率" in df_res.columns:
+                    target_cols += ["回測勝率", "平均獲利", "總交易"]
                 
                 other_cols = [c for c in df_res.columns if c not in target_cols]
                 
