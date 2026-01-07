@@ -93,7 +93,7 @@ def download_batch_data(tickers_batch):
     except Exception: return {}
 
 # -------------------------------------------------
-# 輔助：計算風控數據 (已更新：支援自訂停利價)
+# 輔助：計算風控數據 (支援自訂停利價)
 # -------------------------------------------------
 def calculate_risk_reward(c_now, sl_price, date_now, custom_target=None):
     sl_price = round(sl_price, 2)
@@ -245,7 +245,7 @@ def strategy_bollinger_mid(ticker, name, df, backtest_months):
         
         sl_price = mid_now * 0.97
         
-        # === 修改點：傳入上軌作為停利價 ===
+        # 停利 = 上軌
         rr = calculate_risk_reward(c_now, sl_price, df.index[-1], custom_target=upper_now)
         
         return {
@@ -330,7 +330,7 @@ def strategy_weekly_breakout(ticker, name, df_daily, backtest_months):
     except: return None
 
 # -------------------------------------------------
-# 策略集合
+# 策略集合 (這裡就是您缺少的設定)
 # -------------------------------------------------
 STRATEGIES = {
     "🌀 布林通道中線 (回測支撐)": strategy_bollinger_mid,
