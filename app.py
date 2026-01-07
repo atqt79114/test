@@ -237,7 +237,7 @@ def strategy_bollinger_mid(ticker, name, df, backtest_months):
         ma120 = ta.trend.sma_indicator(close, 120).iloc[-1]
 
         # 邏輯：股價在中線附近
-        if abs(c_now - mid_now) / mid_now > 0.015: return None
+        if abs(c_now - mid_now) / mid_now > 0.01: return None
         if c_now < ma120: return None
         if mid_now < float(bb_mavg.iloc[-2]): return None
 
