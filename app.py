@@ -20,16 +20,14 @@ st.markdown("""
 ### ⚠️ 免責聲明：市場沒有 100% 穩贏的策略
 **所有篩選結果僅供技術分析參考，不代表買賣建議。請務必嚴格執行停損，控制風險。**
 
----
-#### 🧱 硬性濾網：股價必須站上 120MA (半年線)
-所有日線策略皆已加入此條件，確保股票處於 **「長期多頭趨勢」**。
 
 #### 🧠 策略邏輯解析：
 
-1.  **🌀 布林通道中線 (回測支撐)**：
+1.  **🌀 布林通道中線 (非紅K回測)**：
     * **進場**：股價回測布林中線 (20MA) 附近，且長期均線向上。
+    * **K線型態**：**只要不是紅K即可** (收黑K或十字線皆可)，避免追高。
     * **停損**：跌破中線 3% 或下軌。
-    * **停利**：**觸碰布林通道上軌**。
+    * **停利**：觸碰布林通道上軌。
 
 2.  **🛁 爆量回檔 (洗盤)** & **📦 日線盤整突破**：
     * 維持固定賺賠比 (1:1.5) 作為預設目標。
@@ -149,7 +147,7 @@ def run_backtest(df, strategy_type, months):
         bb_hband = indicator_bb.bollinger_hband()
 
         for i in range(start_idx, len(df) - 1):
-            c_curr = close.iloc[i]; h_curr = high.iloc[i]
+            c_curr = close.iloc[i]; h_curr = high.iloc[i]; o_curr = open_p.iloc[i]
             
             # 持倉檢查
             if in_position:
@@ -179,11 +177,14 @@ def run_backtest(df, strategy_type, months):
             # 1. 布林通道中線策略
             if strategy_type == "bollinger_mid":
                 mid = bb_mavg.iloc[i]
-                if abs(c_curr - mid) / mid <= 0.015 and c_curr > ma120.iloc[i]:
-                    if volume.iloc[i] > 500_000:
+                # 條件：在中線附近 + 長多 + 量大
+                if abs(c_curr - mid) / mid <= 0.015 and c_curr > ma120.iloc[i] and volume.iloc[i] > 500_000:
+                    # **修改條件：只要不是紅K (Close <= Open)**
+                    # 包含 黑K (Close < Open) 與 十字線 (Close == Open)
+                    if c_curr <= o_curr: 
                         signal = True
                         curr_sl = mid * 0.97
-                        curr_tp = bb_hband.iloc[i] # 設定初始停利為當天上軌
+                        curr_tp = bb_hband.iloc[i]
 
             # 2. 其他策略 (需 > 120MA)
             elif (c_curr > ma5.iloc[i] and c_curr > ma10.iloc[i] and c_curr > ma20.iloc[i] and c_curr > ma60.iloc[i]):
@@ -223,8 +224,9 @@ def run_backtest(df, strategy_type, months):
 def strategy_bollinger_mid(ticker, name, df, backtest_months):
     try:
         if len(df) < 125: return None
-        close = df["Close"]; volume = df["Volume"]
+        close = df["Close"]; open_p = df["Open"]; volume = df["Volume"]
         c_now = float(close.iloc[-1])
+        o_now = float(open_p.iloc[-1])
         
         if float(volume.iloc[-1]) < 500_000: return None
         
@@ -236,10 +238,18 @@ def strategy_bollinger_mid(ticker, name, df, backtest_months):
         upper_now = float(bb_hband.iloc[-1]) # 當前上軌
         ma120 = ta.trend.sma_indicator(close, 120).iloc[-1]
 
-        # 邏輯：股價在中線附近
+        # 邏輯1：股價在中線附近
         if abs(c_now - mid_now) / mid_now > 0.01: return None
+        
+        # 邏輯2：長線多頭
         if c_now < ma120: return None
+        
+        # 邏輯3：中線趨勢未下彎
         if mid_now < float(bb_mavg.iloc[-2]): return None
+        
+        # 邏輯4 (新增)：只要不是紅K (Close <= Open)
+        # 代表拒絕: 收盤 > 開盤
+        if c_now > o_now: return None
 
         bt_res = run_backtest(df, "bollinger_mid", backtest_months)
         
@@ -254,7 +264,7 @@ def strategy_bollinger_mid(ticker, name, df, backtest_months):
             "布林上軌": round(upper_now, 2),
             **rr, **(bt_res or {}), 
             "外資詳情": get_chip_link(ticker), 
-            "狀態": "中線支撐 🌀"
+            "狀態": "中線支撐(非紅K) 🌀"
         }
     except Exception: return None
 
@@ -330,10 +340,10 @@ def strategy_weekly_breakout(ticker, name, df_daily, backtest_months):
     except: return None
 
 # -------------------------------------------------
-# 策略集合 (這裡就是您缺少的設定)
+# 策略集合
 # -------------------------------------------------
 STRATEGIES = {
-    "🌀 布林通道中線 (回測支撐)": strategy_bollinger_mid,
+    "🌀 布林通道中線 (非紅K回測)": strategy_bollinger_mid,
     "🛁 爆量回檔 (洗盤)": strategy_washout_rebound,
     "📦 日線盤整突破": strategy_consolidation,
     "🔥 週線盤整突破 (爆量2.8倍)": strategy_weekly_breakout,
