@@ -23,9 +23,10 @@ st.markdown("""
 ---
 #### 🧠 策略邏輯解析：
 
-1.  **📉 布林下軌 (穿越站回) [修正版]**：
+1.  **📉 布林下軌 (穿越站回) [純粹版]**：
     * **定義**：價格由下向上穿越下軌線 (乖離過大反彈)。
-    * **條件**：(昨日收盤破下軌 OR 今日開盤破下軌) + **今日收盤站上下軌** + **紅K** + **量縮**。
+    * **條件**：(昨日收盤破下軌 OR 今日開盤破下軌) + **今日收盤站上下軌** + **紅K**。
+    * **量能**：**不需量縮** (允許帶量反彈)。
     * **趨勢**：**不需站上年線** (搶跌深反彈)。
     * **停損**：**當日紅K最低點**。
     * **停利**：布林中線 (20MA)。
@@ -149,7 +150,6 @@ def run_backtest(df, strategy_type, months):
         for i in range(start_idx, len(df) - 1):
             c_curr = close.iloc[i]; h_curr = high.iloc[i]; l_curr = low.iloc[i]
             o_curr = open_p.iloc[i]; v_curr = volume.iloc[i]
-            v_prev = volume.iloc[i-1]
             
             # 持倉檢查
             if in_position:
@@ -176,14 +176,14 @@ def run_backtest(df, strategy_type, months):
 
             # === 策略邏輯 ===
             
-            # 1. 📉 布林下軌 (穿越站回) [修正：移除 ma120 判斷]
+            # 1. 📉 布林下軌 (穿越站回) [修正：移除量縮條件]
             if strategy_type == "bollinger_lower_cross":
                 c_prev = close.iloc[i-1]
                 lower_curr = bb_lband.iloc[i]
                 lower_prev = bb_lband.iloc[i-1]
                 
-                # A. 量能: 量 > 500, 量縮 (移除 c_curr > ma120)
-                if v_curr > 500_000 and v_curr < v_prev:
+                # A. 僅需基本量 > 500 (不需量縮，不需站上年線)
+                if v_curr > 500_000:
                     # B. 穿越型態
                     if (c_prev < lower_prev or o_curr < lower_curr) and c_curr > lower_curr:
                         # C. 紅K確認
@@ -195,6 +195,7 @@ def run_backtest(df, strategy_type, months):
             # 2. 🌀 布林通道中線 (量縮 + 黑K)
             elif strategy_type == "bollinger_mid":
                 mid = bb_mavg.iloc[i]
+                v_prev = volume.iloc[i-1]
                 if abs(c_curr - mid) / mid <= 0.015 and c_curr > ma120.iloc[i] and v_curr > 500_000:
                     if c_curr < o_curr: # 黑K
                         if v_curr < v_prev: # 量縮
@@ -204,6 +205,7 @@ def run_backtest(df, strategy_type, months):
 
             # 3. 其他策略 (需 > 120MA)
             elif (c_curr > ma5.iloc[i] and c_curr > ma10.iloc[i] and c_curr > ma20.iloc[i] and c_curr > ma60.iloc[i]):
+                v_prev = volume.iloc[i-1]
                 if v_curr > 500_000 and c_curr > ma120.iloc[i]:
                     if strategy_type == "washout":
                         c_prev = close.iloc[i-1]; o_prev = open_p.iloc[i-1]
@@ -236,7 +238,7 @@ def run_backtest(df, strategy_type, months):
 # 策略函式
 # -------------------------------------------------
 
-# [修正] 下軌穿越 (不看120MA)
+# [修正] 下軌穿越 (無量縮限制，不看120MA)
 def strategy_bollinger_lower_cross(ticker, name, df, backtest_months):
     try:
         if len(df) < 130: return None
@@ -244,9 +246,8 @@ def strategy_bollinger_lower_cross(ticker, name, df, backtest_months):
         c_now = float(close.iloc[-1]); o_now = float(open_p.iloc[-1])
         l_now = float(low.iloc[-1]); v_now = float(volume.iloc[-1])
         c_prev = float(close.iloc[-2]); o_prev = float(open_p.iloc[-2])
-        v_prev = float(volume.iloc[-2]); v_prev2 = float(volume.iloc[-3])
-
-        # 1. 成交量: >500張
+        
+        # 1. 成交量: >500張 (移除量縮)
         if v_now < 500_000: return None
 
         # 2. 布林
@@ -263,8 +264,8 @@ def strategy_bollinger_lower_cross(ticker, name, df, backtest_months):
         # A. 昨日跌破 (有效殺盤)
         if (lower_prev - c_prev) / lower_prev < 0.003: return None
         
-        # B. 昨日: 黑K + 量縮
-        if not (c_prev < o_prev and v_prev < v_prev2): return None
+        # B. 昨日: 黑K (移除量縮)
+        if not (c_prev < o_prev): return None
 
         # C. 今日: 紅K (買盤確認)
         if c_now <= o_now: return None
@@ -274,9 +275,6 @@ def strategy_bollinger_lower_cross(ticker, name, df, backtest_months):
             
         # E. 今日: 避免追高 (不超過下軌 1.5%)
         if c_now > lower_now * 1.015: return None
-            
-        # F. 今日: 量縮
-        if v_now >= v_prev: return None
 
         bt_res = run_backtest(df, "bollinger_lower_cross", backtest_months)
         
