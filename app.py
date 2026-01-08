@@ -244,55 +244,103 @@ def run_backtest(df, strategy_type, months):
 # [新策略] 下軌穿越 (由下向上)
 def strategy_bollinger_lower_cross(ticker, name, df, backtest_months):
     try:
-        if len(df) < 125: return None
-        close = df["Close"]; open_p = df["Open"]; volume = df["Volume"]; low = df["Low"]
-        
-        # 今日
-        c_now = float(close.iloc[-1]); o_now = float(open_p.iloc[-1])
-        l_now = float(low.iloc[-1]); v_now = float(volume.iloc[-1])
-        
-        # 昨日
-        c_prev = float(close.iloc[-2]); v_prev = float(volume.iloc[-2])
-        
-        # 1. 濾網
-        if v_now < 500_000: return None
-        if v_now >= v_prev: return None # 量縮
-        if c_now < ta.trend.sma_indicator(close, 120).iloc[-1]: return None # 120MA
-        
-        # 2. 布林
-        indicator_bb = ta.volatility.BollingerBands(close=close, window=20, window_dev=2)
-        lower_now = float(indicator_bb.bollinger_lband().iloc[-1])
-        lower_prev = float(indicator_bb.bollinger_lband().iloc[-2])
-        mid_now = float(indicator_bb.bollinger_mavg().iloc[-1])
-        
-        # 3. 核心邏輯：穿越 (Cross Up)
-        # 條件A: "起點在下" -> 昨日收盤破下軌 OR 今日開盤破下軌
-        start_below = (c_prev < lower_prev) or (o_now < lower_now)
-        
-        # 條件B: "終點在上" -> 今日收盤 > 下軌
-        end_above = c_now > lower_now
-        
-        if not (start_below and end_above): return None
-        
-        # 條件C: 必須紅K (確認買盤)
-        if c_now <= o_now: return None
+        if len(df) < 130:
+            return None
 
+        close = df["Close"]
+        open_p = df["Open"]
+        volume = df["Volume"]
+        low = df["Low"]
+
+        # === 今日數據 ===
+        c_now = float(close.iloc[-1])
+        o_now = float(open_p.iloc[-1])
+        l_now = float(low.iloc[-1])
+        v_now = float(volume.iloc[-1])
+
+        # === 昨日數據 ===
+        c_prev = float(close.iloc[-2])
+        o_prev = float(open_p.iloc[-2]) # 新增：昨日開盤價
+        v_prev = float(volume.iloc[-2])
+        v_prev2 = float(volume.iloc[-3])
+
+        # === 趨勢濾網 (長多) ===
+        ma120 = ta.trend.sma_indicator(close, 120).iloc[-1]
+        if c_now < ma120:
+            return None
+
+        # === 成交量基本門檻 ===
+        if v_now < 500_000:
+            return None
+
+        # === 布林通道 ===
+        bb = ta.volatility.BollingerBands(close=close, window=20, window_dev=2)
+        lower_now = float(bb.bollinger_lband().iloc[-1])
+        lower_prev = float(bb.bollinger_lband().iloc[-2])
+        mid_now = float(bb.bollinger_mavg().iloc[-1])
+        upper_now = float(bb.bollinger_hband().iloc[-1])
+
+        # === 布林寬度 (避免死魚盤) ===
+        bb_width = (upper_now - lower_now) / mid_now
+        if bb_width < 0.035:
+            return None
+
+        # === 核心 1：昨日狀態 ===
+        # A. 必須跌破下軌至少 0.3% (確保是真殺盤)
+        break_ratio = (lower_prev - c_prev) / lower_prev
+        if break_ratio < 0.003:   
+            return None
+        
+        # B. 必須是黑K (恐慌) 且 量縮 (賣壓竭盡)
+        # 這裡修正：加入 c_prev < o_prev (昨日黑K)
+        if not (c_prev < o_prev and v_prev < v_prev2):
+            return None
+
+        # === 核心 2：今日狀態 ===
+        # A. 必須紅K (買盤確認)
+        if c_now <= o_now:
+            return None
+            
+        # B. 站回下軌 (允許稍微誤差 0.2%)
+        if c_now < lower_now * 0.998:
+            return None
+            
+        # C. [新增] 避免追高：收盤價不能超過下軌 1.5%
+        if c_now > lower_now * 1.015:
+            return None
+
+        # === 回測 ===
+        # 注意：这里的回测逻辑要确保 run_backtest 函数里有对应处理
+        # 如果 run_backtest 还没支持這個策略名，回測結果會是空的，但不影響篩選
         bt_res = run_backtest(df, "bollinger_lower_cross", backtest_months)
-        
-        sl_price = l_now # 守低點
-        target_price = mid_now
-        rr = calculate_risk_reward(c_now, sl_price, df.index[-1], custom_target=target_price)
-        
-        return {
-            "代號": ticker, "名稱": name, "現價": round(c_now, 2), 
-            "布林下軌": round(lower_now, 2), 
-            "布林中線": round(mid_now, 2),
-            **rr, **(bt_res or {}), 
-            "外資詳情": get_chip_link(ticker), 
-            "狀態": "穿越站回 📈"
-        }
-    except Exception: return None
 
+        # === 風控設定 ===
+        stop_loss = min(l_now, lower_now * 0.995)   # 跌破今日低點或下軌
+        target_price = mid_now                      # 目標：回歸中線
+
+        # === [修正] 參數名稱修正 ===
+        rr = calculate_risk_reward(
+            c_now,          # 現價
+            stop_loss,      # 停損價
+            df.index[-1],   # 日期
+            custom_target=target_price # 自訂停利
+        )
+
+        return {
+            "代號": ticker,
+            "名稱": name,
+            "現價": round(c_now, 2),
+            "布林下軌": round(lower_now, 2),
+            "布林中線": round(mid_now, 2),
+            "布林寬度": round(bb_width * 100, 2),
+            **rr,
+            **(bt_res or {}),
+            "外資詳情": get_chip_link(ticker),
+            "狀態": "破底翻(量縮紅K) 📈"
+        }
+
+    except Exception as e:
+        return None
 # 中線量縮 + 黑K
 def strategy_bollinger_mid(ticker, name, df, backtest_months):
     try:
