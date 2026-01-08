@@ -23,19 +23,18 @@ st.markdown("""
 ---
 #### 🧠 策略邏輯解析：
 
-1.  **📉 布林下軌 (回測有守+固定停利) [最新版]**：
-    * **趨勢**：股價 > 120MA。
-    * **昨日**：**黑K** + **量縮** + **收盤未破下軌** (距離2%內)。
-    * **今日**：**K棒不拘**，但**最低點未破昨日低點** (防守成功)。
-    * **停損**：昨日黑K最低點。
-    * **停利**：**進場價 + 4%**。
+1.  **📉 布林下軌 (回測測底) [修正版]**：
+    * **昨日 (T-1)**：**黑K** + **量縮 (比前天少)** + **最低點碰觸下軌**。
+    * **今日 (T)**：**紅K** (確認止跌反彈)。
+    * **趨勢**：股價站上 120MA。
+    * **停損**：**守昨日黑K最低點**。
+    * **停利**：進場價 + 4% (或布林中線)。
 
 2.  **🌀 布林中線 (量縮黑K)**：
-    * **條件**：股價 > 120MA + 回測中線 + 黑K + 量縮。
-    * **停利**：布林上軌。
+    * 回測中線 + 黑K + 量縮。
 
 3.  **🛁 爆量回檔** & **📦 盤整突破** & **🔥 週線爆量**：
-    * 經典動能策略，需站上 120MA。
+    * 經典動能策略。
 
 ---
 """)
@@ -75,7 +74,7 @@ def get_all_tw_tickers():
 # -------------------------------------------------
 def download_batch_data(tickers_batch):
     try:
-        data = yf.download(tickers_batch, period="2y", interval="1d", group_by='ticker', progress=False, threads=True)
+        data = yf.download(tickers_batch, period="5y", interval="1d", group_by='ticker', progress=False, threads=True)
         result_dict = {}
         if len(tickers_batch) == 1:
             t = tickers_batch[0]
@@ -100,7 +99,6 @@ def calculate_risk_reward(c_now, sl_price, date_now, custom_target=None):
     risk = c_now - sl_price
     if risk <= 0: risk = c_now * 0.01 
     
-    # 這裡支援自訂目標價
     if custom_target:
         target_price = round(custom_target, 2)
         potential_profit = (target_price - c_now) / c_now
@@ -162,7 +160,7 @@ def run_backtest(df, strategy_type, months):
                     trades.append((c_curr - entry_price) / entry_price)
                     in_position = False; continue
                 
-                # 動態停利更新 (非固定停利策略才更新)
+                # 動態停利更新
                 if strategy_type == "bollinger_mid":
                     target_price = bb_hband.iloc[i]
                 
@@ -174,29 +172,31 @@ def run_backtest(df, strategy_type, months):
 
             # === 策略邏輯 ===
             
-            # 1. 📉 布林下軌 (回測有守) [新邏輯]
+            # 1. 📉 布林下軌 (黑K量縮 + 紅K確認) [新邏輯]
             if strategy_type == "bollinger_lower_cross":
-                c_prev = close.iloc[i-1]
-                o_prev = open_p.iloc[i-1]
-                l_prev = low.iloc[i-1]
-                v_prev = volume.iloc[i-1]
-                v_prev2 = volume.iloc[i-2]
+                # 昨日數據
+                c_prev = close.iloc[i-1]; o_prev = open_p.iloc[i-1]
+                l_prev = low.iloc[i-1]; v_prev = volume.iloc[i-1]
                 lower_prev = bb_lband.iloc[i-1]
+                # 前日數據
+                v_prev2 = volume.iloc[i-2]
                 
-                # A. 趨勢: >120MA
+                # A. 趨勢: > 120MA
                 if c_curr > ma120.iloc[i] and v_curr > 500_000:
                     
-                    # B. 昨日: 黑K + 量縮 + 沒破下軌 + 離下軌2%內
-                    cond_prev_black = c_prev < o_prev
-                    cond_prev_vol = v_prev < v_prev2
-                    cond_prev_hold = c_prev >= lower_prev # 沒跌破
-                    cond_prev_near = (c_prev - lower_prev) / lower_prev <= 0.02 # 距離2%
+                    # B. 昨日狀態: 黑K + 量縮 + 碰觸下軌(1.5%內)
+                    # 1. 黑K
+                    is_black_prev = c_prev < o_prev
+                    # 2. 量縮 (昨日 < 前日)
+                    is_vol_shrink_prev = v_prev < v_prev2
+                    # 3. 最低點碰觸下軌 (l_prev <= lower * 1.015)
+                    is_touch_lower = l_prev <= lower_prev * 1.015
                     
-                    if cond_prev_black and cond_prev_vol and cond_prev_hold and cond_prev_near:
-                        # C. 今日: 沒跌破昨日低點
-                        if l_curr >= l_prev:
+                    if is_black_prev and is_vol_shrink_prev and is_touch_lower:
+                        # C. 今日狀態: 紅K
+                        if c_curr > o_curr:
                             signal = True
-                            curr_sl = l_prev # 守昨日低點
+                            curr_sl = l_prev # 守昨日黑K低點
                             curr_tp = c_curr * 1.04 # 固定 4% 停利
 
             # 2. 🌀 布林通道中線 (量縮 + 黑K)
@@ -245,69 +245,62 @@ def run_backtest(df, strategy_type, months):
 # 策略函式
 # -------------------------------------------------
 
-# [修正] 下軌回測有守 (固定停利4%)
-# [放寬版] 下軌回測有守 (距離放寬至3%，含十字線)
+# [修正] 下軌紅K反彈 (昨日量縮黑K測底)
 def strategy_bollinger_lower_cross(ticker, name, df, backtest_months):
     try:
         if len(df) < 130: return None
         close = df["Close"]; open_p = df["Open"]; volume = df["Volume"]; low = df["Low"]
         
-        # 今日
+        # 今日 (T)
         c_now = float(close.iloc[-1]); o_now = float(open_p.iloc[-1])
         l_now = float(low.iloc[-1]); v_now = float(volume.iloc[-1])
         
-        # 昨日
+        # 昨日 (T-1)
         c_prev = float(close.iloc[-2]); o_prev = float(open_p.iloc[-2])
         l_prev = float(low.iloc[-2]); v_prev = float(volume.iloc[-2])
+        
+        # 前日 (T-2)
         v_prev2 = float(volume.iloc[-3])
 
-        # 1. 趨勢: > 120MA (保留長多保護)
+        # 1. 趨勢: > 120MA
         ma120 = ta.trend.sma_indicator(close, 120).iloc[-1]
         if c_now < ma120: return None
 
-        # 2. 成交量 > 500 (保留流動性)
+        # 2. 成交量 > 500
         if v_now < 500_000: return None
 
-        # 3. 布林計算
+        # 3. 布林
         bb = ta.volatility.BollingerBands(close=close, window=20, window_dev=2)
         lower_prev = float(bb.bollinger_lband().iloc[-2])
         mid_now = float(bb.bollinger_mavg().iloc[-1])
         upper_now = float(bb.bollinger_hband().iloc[-1])
         lower_now = float(bb.bollinger_lband().iloc[-1])
 
-        # 4. 寬度檢查 (避免極度壓縮的死魚盤)
-        if (upper_now - lower_now) / mid_now < 0.03: return None
+        # 4. 寬度檢查 (避免極度壓縮)
+        if (upper_now - lower_now) / mid_now < 0.035: return None
 
-        # 5. 核心邏輯 - 昨日 (放寬條件)
-        # A. 黑K 或 十字線 (收 <= 開)
-        if not (c_prev <= o_prev): return None
+        # === 核心邏輯 - 昨日 (T-1) ===
+        # A. 必須是黑K
+        if not (c_prev < o_prev): return None
         
-        # B. 量縮 (小於前一天)
+        # B. 必須量縮 (比 T-2 少)
         if not (v_prev < v_prev2): return None
         
-        # C. 沒跌破下軌 (Close >= Lower)
-        if c_prev < lower_prev: return None
-        
-        # D. [放寬] 距離下軌 3% 內 (原本1.5%太嚴格)
-        # 計算方式: (收盤 - 下軌) / 下軌
-        dist = (c_prev - lower_prev) / lower_prev
-        if dist > 0.03: return None
+        # C. 最低點碰觸或跌破下軌 (距離 1.5% 內)
+        # Low <= Lower * 1.015
+        if l_prev > lower_prev * 1.015: return None
 
-        # 6. 核心邏輯 - 今日
-        # A. 不跌破昨日低點 (防守成功)
-        if l_now < l_prev: return None
+        # === 核心邏輯 - 今日 (T) ===
+        # A. 必須紅K
+        if c_now <= o_now: return None
         
-        # B. 顏色不拘，但不能是殺盤長黑
-        # 這裡我們只篩選 紅K 或 平盤 (收 >= 開)，確保多方表態
-        # 如果您想連今天收小黑K都看，可以註解掉下面這行
-        if c_now < o_now: return None
+        # B. 成交量不限制 (已移除比較)
 
-        # 回測
         bt_res = run_backtest(df, "bollinger_lower_cross", backtest_months)
         
         # 風控
-        sl_price = l_prev 
-        target_price = c_now * 1.04
+        sl_price = l_prev # 守昨日黑K低點
+        target_price = c_now * 1.04 # 固定 4%
 
         rr = calculate_risk_reward(c_now, sl_price, df.index[-1], custom_target=target_price)
 
@@ -317,9 +310,10 @@ def strategy_bollinger_lower_cross(ticker, name, df, backtest_months):
             "布林中線": round(mid_now, 2),
             **rr, **(bt_res or {}), 
             "外資詳情": get_chip_link(ticker), 
-            "狀態": "下軌回測有守 📈"
+            "狀態": "下軌測底(昨量縮黑K) 📈"
         }
     except Exception: return None
+
 # 中線量縮 + 黑K
 def strategy_bollinger_mid(ticker, name, df, backtest_months):
     try:
@@ -431,7 +425,7 @@ def strategy_weekly_breakout(ticker, name, df_daily, backtest_months):
 # 策略集合
 # -------------------------------------------------
 STRATEGIES = {
-    "📉 布林下軌 (回測有守)": strategy_bollinger_lower_cross,
+    "📉 布林下軌 (回測測底)": strategy_bollinger_lower_cross,
     "🌀 布林中線 (量縮黑K)": strategy_bollinger_mid,
     "🛁 爆量回檔 (洗盤)": strategy_washout_rebound,
     "📦 日線盤整突破": strategy_consolidation,
@@ -472,9 +466,12 @@ st.sidebar.header("策略選擇")
 selected = [k for k in STRATEGIES if st.sidebar.checkbox(k, True)]
 
 st.sidebar.markdown("---")
-st.sidebar.header("📊 回測設定")
-st.sidebar.caption("※ 回測僅適用日線策略")
-backtest_period = st.sidebar.radio("回測區間", [3, 6, 12], format_func=lambda x: f"過去 {x} 個月")
+# 修改：增加更多回測選項
+backtest_period = st.sidebar.selectbox(
+    "回測區間 (月)", 
+    [12, 24, 36, 48, 60], 
+    format_func=lambda x: f"過去 {x} 個月"
+)
 
 if st.button("開始掃描", type="primary"):
     if not tickers:
