@@ -246,57 +246,68 @@ def run_backtest(df, strategy_type, months):
 # -------------------------------------------------
 
 # [修正] 下軌回測有守 (固定停利4%)
+# [放寬版] 下軌回測有守 (距離放寬至3%，含十字線)
 def strategy_bollinger_lower_cross(ticker, name, df, backtest_months):
     try:
         if len(df) < 130: return None
         close = df["Close"]; open_p = df["Open"]; volume = df["Volume"]; low = df["Low"]
         
         # 今日
-        c_now = float(close.iloc[-1]); l_now = float(low.iloc[-1]); v_now = float(volume.iloc[-1])
+        c_now = float(close.iloc[-1]); o_now = float(open_p.iloc[-1])
+        l_now = float(low.iloc[-1]); v_now = float(volume.iloc[-1])
         
         # 昨日
         c_prev = float(close.iloc[-2]); o_prev = float(open_p.iloc[-2])
         l_prev = float(low.iloc[-2]); v_prev = float(volume.iloc[-2])
         v_prev2 = float(volume.iloc[-3])
 
-        # 1. 趨勢: > 120MA
+        # 1. 趨勢: > 120MA (保留長多保護)
         ma120 = ta.trend.sma_indicator(close, 120).iloc[-1]
         if c_now < ma120: return None
 
-        # 2. 成交量 > 500
+        # 2. 成交量 > 500 (保留流動性)
         if v_now < 500_000: return None
 
-        # 3. 布林
+        # 3. 布林計算
         bb = ta.volatility.BollingerBands(close=close, window=20, window_dev=2)
         lower_prev = float(bb.bollinger_lband().iloc[-2])
         mid_now = float(bb.bollinger_mavg().iloc[-1])
         upper_now = float(bb.bollinger_hband().iloc[-1])
-        lower_now = float(bb.bollinger_lband().iloc[-1]) # 顯示用
+        lower_now = float(bb.bollinger_lband().iloc[-1])
 
-        # 4. 寬度檢查 (避免過窄)
-        if (upper_now - lower_now) / mid_now < 0.035: return None
+        # 4. 寬度檢查 (避免極度壓縮的死魚盤)
+        if (upper_now - lower_now) / mid_now < 0.03: return None
 
-        # 5. 核心邏輯 - 昨日
-        # A. 黑K
-        if not (c_prev < o_prev): return None
+        # 5. 核心邏輯 - 昨日 (放寬條件)
+        # A. 黑K 或 十字線 (收 <= 開)
+        if not (c_prev <= o_prev): return None
+        
         # B. 量縮 (小於前一天)
         if not (v_prev < v_prev2): return None
+        
         # C. 沒跌破下軌 (Close >= Lower)
         if c_prev < lower_prev: return None
-        # D. 距離下軌 2% 內 (精準回測)
+        
+        # D. [放寬] 距離下軌 3% 內 (原本1.5%太嚴格)
+        # 計算方式: (收盤 - 下軌) / 下軌
         dist = (c_prev - lower_prev) / lower_prev
-        if dist > 0.02: return None
+        if dist > 0.03: return None
 
         # 6. 核心邏輯 - 今日
         # A. 不跌破昨日低點 (防守成功)
         if l_now < l_prev: return None
-        # B. 顏色不拘 (紅黑皆可) -> Pass
+        
+        # B. 顏色不拘，但不能是殺盤長黑
+        # 這裡我們只篩選 紅K 或 平盤 (收 >= 開)，確保多方表態
+        # 如果您想連今天收小黑K都看，可以註解掉下面這行
+        if c_now < o_now: return None
 
+        # 回測
         bt_res = run_backtest(df, "bollinger_lower_cross", backtest_months)
         
         # 風控
-        sl_price = l_prev # 守昨日黑K低點
-        target_price = c_now * 1.04 # 固定 4% 停利
+        sl_price = l_prev 
+        target_price = c_now * 1.04
 
         rr = calculate_risk_reward(c_now, sl_price, df.index[-1], custom_target=target_price)
 
@@ -309,7 +320,6 @@ def strategy_bollinger_lower_cross(ticker, name, df, backtest_months):
             "狀態": "下軌回測有守 📈"
         }
     except Exception: return None
-
 # 中線量縮 + 黑K
 def strategy_bollinger_mid(ticker, name, df, backtest_months):
     try:
