@@ -12,7 +12,7 @@ warnings.filterwarnings("ignore")
 # 頁面設定
 # -------------------------------------------------
 st.set_page_config(page_title="台股強勢策略篩選器", layout="wide")
-st.title("📈 台股強勢策略篩選器（下軌紅K反彈版）")
+st.title("📈 台股強勢策略篩選器）")
 
 # === 核心：詳細策略邏輯與免責聲明 ===
 st.markdown("""
@@ -26,20 +26,20 @@ st.markdown("""
 
 #### 🧠 策略邏輯解析：
 
-1.  **🌹 布林下軌 (量縮紅K) [新]**：
-    * **邏輯**：回測下軌後，多方表態收紅，量縮代表賣壓減輕。
-    * **條件**：低點近下軌 + **收紅K** + **量縮**。
-    * **停損**：**守當日紅K最低點**。
-    * **停利**：布林中線 (20MA)。
+1.  **🌀 布林中線 (量縮黑K) [修改]**：
+    * **邏輯**：多頭回檔至中線支撐，賣壓竭盡。
+    * **條件**：回測中線 + **收黑K** + **量縮** (今日量 < 昨日量)。
+    * **停利**：布林上軌。
 
-2.  **📉 布林下軌 (量縮黑K)**：
-    * **邏輯**：逆勢摸底，賭下軌支撐有效。
+2.  **🌹 布林下軌 (量縮紅K)**：
+    * **邏輯**：回測下軌，多方表態收紅。
+    * **條件**：低點近下軌 + 收紅K + 量縮。
+    * **停損**：當日紅K最低點。
+
+3.  **📉 布林下軌 (量縮黑K)**：
+    * **邏輯**：逆勢摸底，賭下軌支撐。
     * **條件**：低點近下軌 + 收黑K + 量縮。
     * **停損**：當日下軌。
-
-3.  **🌀 布林中線 (非紅K回測)**：
-    * **條件**：回測中線 + 非紅K。
-    * **停利**：布林上軌。
 
 ---
 """)
@@ -170,7 +170,7 @@ def run_backtest(df, strategy_type, months):
                 if strategy_type == "bollinger_mid":
                     target_price = bb_hband.iloc[i]
                 elif "bollinger_lower" in strategy_type:
-                    target_price = bb_mavg.iloc[i] # 下軌策略統一目標中線
+                    target_price = bb_mavg.iloc[i]
                 
                 continue
 
@@ -180,14 +180,14 @@ def run_backtest(df, strategy_type, months):
 
             # === 策略邏輯 ===
             
-            # 1. 🌹 布林下軌 (量縮紅K) [新]
+            # 1. 🌹 布林下軌 (量縮紅K)
             if strategy_type == "bollinger_lower_red":
                 lower = bb_lband.iloc[i]
                 if l_curr <= lower * 1.015 and c_curr > ma120.iloc[i]:
                     if v_curr > 500_000 and v_curr < v_prev:
                         if c_curr > o_curr: # 紅K
                             signal = True
-                            curr_sl = l_curr # 停損守當日最低
+                            curr_sl = l_curr
                             curr_tp = bb_mavg.iloc[i]
 
             # 2. 📉 布林下軌 (量縮黑K)
@@ -200,11 +200,12 @@ def run_backtest(df, strategy_type, months):
                              curr_sl = lower
                              curr_tp = bb_mavg.iloc[i]
 
-            # 3. 🌀 布林通道中線 (非紅K)
+            # 3. 🌀 布林通道中線 (量縮 + 黑K) [修改處]
             elif strategy_type == "bollinger_mid":
                 mid = bb_mavg.iloc[i]
                 if abs(c_curr - mid) / mid <= 0.015 and c_curr > ma120.iloc[i] and v_curr > 500_000:
-                    if c_curr <= o_curr: # 非紅K
+                    # 修改：黑K + 量縮
+                    if c_curr < o_curr and v_curr < v_prev: 
                         signal = True
                         curr_sl = mid * 0.97
                         curr_tp = bb_hband.iloc[i]
@@ -243,7 +244,6 @@ def run_backtest(df, strategy_type, months):
 # 策略函式
 # -------------------------------------------------
 
-# [新策略] 下軌紅K
 def strategy_bollinger_lower_red(ticker, name, df, backtest_months):
     try:
         if len(df) < 125: return None
@@ -252,26 +252,21 @@ def strategy_bollinger_lower_red(ticker, name, df, backtest_months):
         l_now = float(low.iloc[-1]); v_now = float(volume.iloc[-1])
         v_prev = float(volume.iloc[-2])
         
-        # 1. 濾網
         if v_now < 500_000: return None
         if v_now >= v_prev: return None # 量縮
-        if c_now < ta.trend.sma_indicator(close, 120).iloc[-1]: return None # 120MA
+        if c_now < ta.trend.sma_indicator(close, 120).iloc[-1]: return None
         
-        # 2. 布林
         indicator_bb = ta.volatility.BollingerBands(close=close, window=20, window_dev=2)
         lower_now = float(indicator_bb.bollinger_lband().iloc[-1])
         mid_now = float(indicator_bb.bollinger_mavg().iloc[-1])
         
-        # 3. 條件：低點接近下軌 + 紅K
         if l_now > lower_now * 1.015: return None
-        if c_now <= o_now: return None # 必須紅K (收 > 開)
+        if c_now <= o_now: return None # 紅K
 
         bt_res = run_backtest(df, "bollinger_lower_red", backtest_months)
         
-        # 4. 停損守當日低點
         sl_price = l_now 
         target_price = mid_now
-        
         rr = calculate_risk_reward(c_now, sl_price, df.index[-1], custom_target=target_price)
         
         return {
@@ -284,7 +279,6 @@ def strategy_bollinger_lower_red(ticker, name, df, backtest_months):
         }
     except Exception: return None
 
-# [舊策略] 下軌黑K
 def strategy_bollinger_lower_black(ticker, name, df, backtest_months):
     try:
         if len(df) < 125: return None
@@ -302,13 +296,12 @@ def strategy_bollinger_lower_black(ticker, name, df, backtest_months):
         mid_now = float(indicator_bb.bollinger_mavg().iloc[-1])
 
         if l_now > lower_now * 1.015: return None
-        if c_now >= o_now: return None # 必須黑K
+        if c_now >= o_now: return None # 黑K
 
         bt_res = run_backtest(df, "bollinger_lower_black", backtest_months)
         
         sl_price = lower_now 
         target_price = mid_now
-        
         rr = calculate_risk_reward(c_now, sl_price, df.index[-1], custom_target=target_price)
         
         return {
@@ -321,27 +314,35 @@ def strategy_bollinger_lower_black(ticker, name, df, backtest_months):
         }
     except Exception: return None
 
+# [修改後] 中線量縮黑K
 def strategy_bollinger_mid(ticker, name, df, backtest_months):
     try:
         if len(df) < 125: return None
         close = df["Close"]; open_p = df["Open"]; volume = df["Volume"]
         c_now = float(close.iloc[-1]); o_now = float(open_p.iloc[-1])
+        v_now = float(volume.iloc[-1]); v_prev = float(volume.iloc[-2])
         
-        if float(volume.iloc[-1]) < 500_000: return None
+        # 1. 基本過濾
+        if v_now < 500_000: return None
+        if c_now < ta.trend.sma_indicator(close, 120).iloc[-1]: return None # 120MA
         
+        # 2. 布林計算
         indicator_bb = ta.volatility.BollingerBands(close=close, window=20, window_dev=2)
         bb_mavg = indicator_bb.bollinger_mavg()
         bb_hband = indicator_bb.bollinger_hband()
         mid_now = float(bb_mavg.iloc[-1])
         upper_now = float(bb_hband.iloc[-1]) 
-        ma120 = ta.trend.sma_indicator(close, 120).iloc[-1]
-
-        if abs(c_now - mid_now) / mid_now > 0.01: return None
-        if c_now < ma120: return None
-        if mid_now < float(bb_mavg.iloc[-2]): return None
-        if c_now > o_now: return None 
+        
+        # 3. 策略核心：中線 + 黑K + 量縮
+        if abs(c_now - mid_now) / mid_now > 0.01: return None # 靠近中線 1%
+        if mid_now < float(bb_mavg.iloc[-2]): return None # 中線未下彎
+        
+        # 修改重點：黑K + 量縮
+        if c_now >= o_now: return None # 必須是黑K (收 < 開)
+        if v_now >= v_prev: return None # 必須量縮
 
         bt_res = run_backtest(df, "bollinger_mid", backtest_months)
+        
         sl_price = mid_now * 0.97
         rr = calculate_risk_reward(c_now, sl_price, df.index[-1], custom_target=upper_now)
         
@@ -351,7 +352,7 @@ def strategy_bollinger_mid(ticker, name, df, backtest_months):
             "布林上軌": round(upper_now, 2),
             **rr, **(bt_res or {}), 
             "外資詳情": get_chip_link(ticker), 
-            "狀態": "中線非紅K 🌀"
+            "狀態": "中線黑K量縮 🌀"
         }
     except Exception: return None
 
@@ -430,9 +431,9 @@ def strategy_weekly_breakout(ticker, name, df_daily, backtest_months):
 # 策略集合
 # -------------------------------------------------
 STRATEGIES = {
+    "🌀 布林中線 (量縮黑K)": strategy_bollinger_mid,
     "🌹 布林下軌 (量縮紅K)": strategy_bollinger_lower_red,
     "📉 布林下軌 (量縮黑K)": strategy_bollinger_lower_black,
-    "🌀 布林中線 (非紅K回測)": strategy_bollinger_mid,
     "🛁 爆量回檔 (洗盤)": strategy_washout_rebound,
     "📦 日線盤整突破": strategy_consolidation,
     "🔥 週線盤整突破 (爆量2.8倍)": strategy_weekly_breakout,
