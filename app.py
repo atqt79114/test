@@ -23,12 +23,11 @@ st.markdown("""
 ---
 #### 🧠 策略邏輯解析：
 
-1.  **📉 布林下軌 (觸底紅K) [最寬鬆版]**：
-    * **邏輯**：股價回測布林下軌支撐，出現紅K表態。
-    * **昨日**：**最低點** 碰觸或跌破 布林下軌。
-    * **今日**：**紅K** (收盤 > 開盤)。
-    * **意義**：不論趨勢與成交量，單純抓取「下軌支撐確認」的訊號。
-    * **停損**：**當日紅K最低點**。
+1.  **📉 布林下軌 (回測有守) [修正版]**：
+    * **昨日**：**黑K** + **量縮** + **收在下軌之上 (未跌破)** 且 **距離下軌 1.5% 內**。
+    * **今日**：**紅K 或 平盤** (非黑K即可)。
+    * **意義**：回檔至下軌支撐確認有效，且賣壓竭盡，今日止跌。
+    * **停損**：當日低點。
     * **停利**：布林中線 (20MA)。
 
 2.  **🌀 布林中線 (量縮黑K)**：
@@ -176,19 +175,27 @@ def run_backtest(df, strategy_type, months):
 
             # === 策略邏輯 ===
             
-            # 1. 📉 布林下軌 (觸底紅K) [寬鬆版]
+            # 1. 📉 布林下軌 (回測有守) [修改：今日紅K或平盤]
             if strategy_type == "bollinger_lower_cross":
-                l_prev = low.iloc[i-1] # 昨日低點
+                c_prev = close.iloc[i-1]
+                o_prev = open_p.iloc[i-1]
+                v_prev = volume.iloc[i-1]
+                v_prev2 = volume.iloc[i-2]
                 lower_prev = bb_lband.iloc[i-1]
                 
-                # A. 僅需基本量 > 500
-                if v_curr > 500_000:
-                    # B. 觸底條件: 昨日低點 <= 昨日下軌
-                    if l_prev <= lower_prev:
-                        # C. 紅K確認: 今日收 > 開
-                        if c_curr > o_curr:
+                # A. 量能條件: 昨日成交量 < 前日成交量 (量縮) 且 基本量 > 500
+                if v_prev < v_prev2 and v_curr > 500_000:
+                    
+                    # B. 昨日狀態: 黑K + 沒跌破下軌 + 接近下軌(1.5%內)
+                    is_prev_black = c_prev < o_prev
+                    is_prev_hold = c_prev >= lower_prev
+                    is_prev_near = c_prev <= lower_prev * 1.015
+                    
+                    if is_prev_black and is_prev_hold and is_prev_near:
+                        # C. 今日狀態: 紅K 或 平盤 (收 >= 開)
+                        if c_curr >= o_curr:
                             signal = True
-                            curr_sl = l_curr # 守當日低點
+                            curr_sl = l_curr 
                             curr_tp = bb_mavg.iloc[i]
 
             # 2. 🌀 布林通道中線 (量縮 + 黑K)
@@ -237,18 +244,21 @@ def run_backtest(df, strategy_type, months):
 # 策略函式
 # -------------------------------------------------
 
-# [修正] 下軌觸底紅K (寬鬆版)
+# [修正] 下軌支撐有守 (量縮 + 紅K或平盤)
 def strategy_bollinger_lower_cross(ticker, name, df, backtest_months):
     try:
         if len(df) < 130: return None
         close = df["Close"]; open_p = df["Open"]; volume = df["Volume"]; low = df["Low"]
+        
+        # 今日
         c_now = float(close.iloc[-1]); o_now = float(open_p.iloc[-1])
         l_now = float(low.iloc[-1]); v_now = float(volume.iloc[-1])
         
-        # 需讀取昨日低點
-        l_prev = float(low.iloc[-2])
-        
-        # 1. 成交量: >500張
+        # 昨日
+        c_prev = float(close.iloc[-2]); o_prev = float(open_p.iloc[-2])
+        v_prev = float(volume.iloc[-2]); v_prev2 = float(volume.iloc[-3])
+
+        # 1. 成交量: >500張 (今日)
         if v_now < 500_000: return None
 
         # 2. 布林
@@ -262,16 +272,25 @@ def strategy_bollinger_lower_cross(ticker, name, df, backtest_months):
         if (upper_now - lower_now) / mid_now < 0.035: return None
 
         # 4. 核心邏輯
-        # A. 昨日低點 碰觸或跌破 下軌
-        if l_prev > lower_prev: return None
+        # A. 昨日量縮 (相比前日)
+        if not (v_prev < v_prev2): return None
         
-        # B. 今日: 紅K (收 > 開)
-        if c_now <= o_now: return None
+        # B. 昨日狀態:
+        #    a. 黑K (收 < 開)
+        #    b. 收盤沒有跌破下軌 (有守)
+        #    c. 在下軌附近 (距離 1.5% 內)
+        is_prev_black = c_prev < o_prev
+        is_prev_hold = c_prev >= lower_prev
+        is_prev_near = c_prev <= lower_prev * 1.015
+        
+        if not (is_prev_black and is_prev_hold and is_prev_near): return None
+
+        # C. 今日: 紅K 或 平盤 (收 >= 開) [修改點]
+        if c_now < o_now: return None
             
         bt_res = run_backtest(df, "bollinger_lower_cross", backtest_months)
         
-        # 停損守當日紅K低點
-        sl_price = l_now
+        sl_price = min(l_now, lower_now * 0.995)
         target_price = mid_now
 
         rr = calculate_risk_reward(c_now, sl_price, df.index[-1], custom_target=target_price)
@@ -282,7 +301,7 @@ def strategy_bollinger_lower_cross(ticker, name, df, backtest_months):
             "布林中線": round(mid_now, 2),
             **rr, **(bt_res or {}), 
             "外資詳情": get_chip_link(ticker), 
-            "狀態": "下軌觸底紅K 📈"
+            "狀態": "下軌支撐(量縮) 📈"
         }
     except Exception: return None
 
@@ -397,7 +416,7 @@ def strategy_weekly_breakout(ticker, name, df_daily, backtest_months):
 # 策略集合
 # -------------------------------------------------
 STRATEGIES = {
-    "📉 布林下軌 (觸底紅K)": strategy_bollinger_lower_cross,
+    "📉 布林下軌 (回測有守)": strategy_bollinger_lower_cross,
     "🌀 布林中線 (量縮黑K)": strategy_bollinger_mid,
     "🛁 爆量回檔 (洗盤)": strategy_washout_rebound,
     "📦 日線盤整突破": strategy_consolidation,
