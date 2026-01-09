@@ -25,7 +25,6 @@ st.markdown("""
 
 1.  **📉 布林下軌 (回測有守+固定停利)**：
     * **參數**：**10日** 布林通道。
-    * **趨勢**：股價 > 120MA。
     * **昨日**：**黑K** + **量縮** + **收盤未破下軌** (距離2%內)。
     * **今日**：**K棒不拘**，但**最低點未破昨日低點**。
     * **停損**：昨日黑K低點。
@@ -38,6 +37,9 @@ st.markdown("""
 
 3.  **🛁 爆量回檔** & **📦 盤整突破**：
     * 經典動能策略，需站上 120MA，賺賠比 1:1.5。
+
+4.  **🔥 週線盤整突破**：
+    * **不進行日線回測** (因為是週線架構)。
 
 ---
 """)
@@ -117,7 +119,7 @@ def calculate_risk_reward(c_now, sl_price, date_now, custom_target=None):
     }
 
 # -------------------------------------------------
-# 核心：回測引擎 (已修復邏輯同步問題)
+# 核心：回測引擎 (確保包含所有日線策略)
 # -------------------------------------------------
 def run_backtest(df, strategy_type, months):
     try:
@@ -135,7 +137,7 @@ def run_backtest(df, strategy_type, months):
         
         close = df["Close"]; open_p = df["Open"]; high = df["High"]; low = df["Low"]; volume = df["Volume"]
         
-        # 1. 計算所有需要的指標
+        # 1. 計算指標
         ma5 = ta.trend.sma_indicator(close, 5)
         ma10 = ta.trend.sma_indicator(close, 10)
         ma20 = ta.trend.sma_indicator(close, 20)
@@ -143,7 +145,7 @@ def run_backtest(df, strategy_type, months):
         ma120 = ta.trend.sma_indicator(close, 120)
         vol_ma5 = volume.rolling(5).mean()
         
-        # 布林通道 (針對下軌策略用 10MA，其他用 20MA)
+        # 布林通道 (下軌策略用 10MA，其他用 20MA)
         bb10 = ta.volatility.BollingerBands(close=close, window=10, window_dev=2)
         bb20 = ta.volatility.BollingerBands(close=close, window=20, window_dev=2)
 
@@ -152,91 +154,69 @@ def run_backtest(df, strategy_type, months):
             
             # === 持倉檢查 ===
             if in_position:
-                # 停利
                 if h_curr >= target_price: 
                     trades.append((target_price - entry_price) / entry_price)
                     in_position = False; continue
-                # 停損
                 if c_curr < stop_loss_price:
                     trades.append((c_curr - entry_price) / entry_price)
                     in_position = False; continue
                 
-                # 布林中線策略的動態停利 (更新為上軌)
+                # 布林中線策略動態停利
                 if strategy_type == "bollinger_mid":
                     target_price = bb20.bollinger_hband().iloc[i]
-                
                 continue
 
-            # === 進場邏輯檢查 ===
+            # === 進場訊號 ===
             signal = False
             curr_sl = 0
             curr_tp = 0
             
-            # --- 共同濾網：流動性 ---
             if volume.iloc[i] < 500_000: continue
 
-            # ==========================================
-            # 策略 1: 布林下軌 (10MA + 回測有守 + 固定停利)
-            # ==========================================
+            # 1. 下軌策略 (10MA)
             if strategy_type == "bollinger_lower_cross":
-                # 1. 趨勢 > 120MA
                 if c_curr > ma120.iloc[i]:
-                    # 昨/前 數據
-                    c_prev = close.iloc[i-1]; o_prev = open_p.iloc[i-1]; l_prev = low.iloc[i-1]
-                    v_prev = volume.iloc[i-1]; v_prev2 = volume.iloc[i-2]
-                    lower_prev = bb10.bollinger_lband().iloc[i-1] # 10日下軌
+                    c_prev = close.iloc[i-1]; o_prev = open_p.iloc[i-1]
+                    l_prev = low.iloc[i-1]; v_prev = volume.iloc[i-1]; v_prev2 = volume.iloc[i-2]
+                    lower_prev = bb10.bollinger_lband().iloc[i-1]
                     
-                    # 2. 昨日黑K + 量縮 + 沒破下軌 + 距離2%內
-                    cond_prev_black = c_prev < o_prev
-                    cond_prev_vol = v_prev < v_prev2
-                    cond_prev_hold = c_prev >= lower_prev
-                    cond_prev_near = (c_prev - lower_prev) / lower_prev <= 0.02
-                    
-                    if cond_prev_black and cond_prev_vol and cond_prev_hold and cond_prev_near:
-                        # 3. 今日不破昨低
-                        if l_curr >= l_prev:
-                            signal = True
-                            curr_sl = l_prev
-                            curr_tp = c_curr * 1.04 # 固定 4%
+                    if c_prev < o_prev and v_prev < v_prev2 and c_prev >= lower_prev:
+                        if (c_prev - lower_prev) / lower_prev <= 0.02:
+                            if l_curr >= l_prev:
+                                signal = True
+                                curr_sl = l_prev
+                                curr_tp = c_curr * 1.04
 
-            # ==========================================
-            # 策略 2: 布林中線 (20MA + 量縮 + 黑K)
-            # ==========================================
+            # 2. 中線策略 (20MA)
             elif strategy_type == "bollinger_mid":
-                # 1. 趨勢 > 120MA
                 if c_curr > ma120.iloc[i]:
                     mid = bb20.bollinger_mavg().iloc[i]
-                    o_curr = open_p.iloc[i]
-                    v_prev = volume.iloc[i-1]
-                    
-                    # 2. 接近中線 + 中線向上
                     if abs(c_curr - mid) / mid <= 0.015 and mid > bb20.bollinger_mavg().iloc[i-1]:
-                        # 3. 黑K + 量縮
-                        if c_curr < o_curr and volume.iloc[i] < v_prev:
+                        if c_curr < open_p.iloc[i] and volume.iloc[i] < volume.iloc[i-1]:
                             signal = True
                             curr_sl = mid * 0.97
                             curr_tp = bb20.bollinger_hband().iloc[i]
 
-            # ==========================================
-            # 策略 3: 洗盤 & 盤整 (需 > 120MA + 多頭排列)
-            # ==========================================
-            elif strategy_type in ["washout", "consolidation"]:
-                # 1. 多頭排列 check
-                if (c_curr > ma5.iloc[i] and c_curr > ma10.iloc[i] and c_curr > ma20.iloc[i] and c_curr > ma60.iloc[i] and c_curr > ma120.iloc[i]):
-                    
-                    if strategy_type == "washout":
-                        c_prev = close.iloc[i-1]; o_prev = open_p.iloc[i-1]
-                        v_prev = volume.iloc[i-1]; v_prev_2 = volume.iloc[i-2]
-                        if (c_prev < o_prev) and (v_prev > v_prev_2) and (c_prev >= ma5.iloc[i-1]) and \
-                           (volume.iloc[i] < v_prev) and (c_curr >= ma5.iloc[i]):
-                            signal = True; curr_sl = ma5.iloc[i]; curr_tp = c_curr + (c_curr - curr_sl) * 1.5
-                    
-                    elif strategy_type == "consolidation":
-                        res = high.iloc[i-21:i].max()
-                        if c_curr > res and volume.iloc[i] > vol_ma5.iloc[i-1] * 1.5:
-                            signal = True; curr_sl = ma5.iloc[i]; curr_tp = c_curr + (c_curr - curr_sl) * 1.5
+            # 3. 洗盤 (Washout)
+            elif strategy_type == "washout":
+                if c_curr > ma120.iloc[i] and c_curr > ma60.iloc[i] and c_curr > ma20.iloc[i]:
+                    c_prev = close.iloc[i-1]; o_prev = open_p.iloc[i-1]
+                    v_prev = volume.iloc[i-1]; v_prev2 = volume.iloc[i-2]
+                    if c_prev < o_prev and v_prev > v_prev2 and c_prev >= ma5.iloc[i-1]:
+                        if volume.iloc[i] < v_prev and c_curr >= ma5.iloc[i]:
+                            signal = True
+                            curr_sl = ma5.iloc[i]
+                            curr_tp = c_curr + (c_curr - curr_sl) * 1.5
 
-            # === 執行訊號 ===
+            # 4. 盤整突破 (Consolidation)
+            elif strategy_type == "consolidation":
+                if c_curr > ma120.iloc[i] and c_curr > ma60.iloc[i] and c_curr > ma20.iloc[i]:
+                    res = high.iloc[i-21:i].max()
+                    if c_curr > res and volume.iloc[i] > vol_ma5.iloc[i-1] * 1.5:
+                        signal = True
+                        curr_sl = ma5.iloc[i]
+                        curr_tp = c_curr + (c_curr - curr_sl) * 1.5
+
             if signal:
                 in_position = True
                 entry_price = c_curr
@@ -261,54 +241,35 @@ def strategy_bollinger_lower_cross(ticker, name, df, backtest_months):
     try:
         if len(df) < 130: return None
         close = df["Close"]; open_p = df["Open"]; volume = df["Volume"]; low = df["Low"]
-        
-        # 今日
         c_now = float(close.iloc[-1]); l_now = float(low.iloc[-1]); v_now = float(volume.iloc[-1])
-        
-        # 昨日
         c_prev = float(close.iloc[-2]); o_prev = float(open_p.iloc[-2])
-        l_prev = float(low.iloc[-2]); v_prev = float(volume.iloc[-2])
-        v_prev2 = float(volume.iloc[-3])
+        l_prev = float(low.iloc[-2]); v_prev = float(volume.iloc[-2]); v_prev2 = float(volume.iloc[-3])
 
-        # 1. 趨勢: > 120MA
         ma120 = ta.trend.sma_indicator(close, 120).iloc[-1]
         if c_now < ma120: return None
-
-        # 2. 成交量 > 500
         if v_now < 500_000: return None
 
-        # 3. 布林 (10日)
         bb = ta.volatility.BollingerBands(close=close, window=10, window_dev=2)
         lower_prev = float(bb.bollinger_lband().iloc[-2])
         mid_now = float(bb.bollinger_mavg().iloc[-1])
         upper_now = float(bb.bollinger_hband().iloc[-1])
         lower_now = float(bb.bollinger_lband().iloc[-1])
 
-        # 4. 寬度檢查
         if (upper_now - lower_now) / mid_now < 0.035: return None
 
-        # 5. 核心邏輯 - 昨日
-        # A. 黑K
+        # 昨日: 黑K + 量縮 + 沒破下軌 + 距離2%內
         if not (c_prev < o_prev): return None
-        # B. 量縮
         if not (v_prev < v_prev2): return None
-        # C. 沒跌破下軌
         if c_prev < lower_prev: return None
-        # D. 距離下軌 2% 內
-        dist = (c_prev - lower_prev) / lower_prev
-        if dist > 0.02: return None
+        if (c_prev - lower_prev) / lower_prev > 0.02: return None
 
-        # 6. 核心邏輯 - 今日
-        # A. 不跌破昨日低點
+        # 今日: 不破昨低
         if l_now < l_prev: return None
-        # B. 顏色不拘
 
         bt_res = run_backtest(df, "bollinger_lower_cross", backtest_months)
         
-        # 風控
         sl_price = l_prev 
-        target_price = c_now * 1.04 # 固定 4%
-
+        target_price = c_now * 1.04 
         rr = calculate_risk_reward(c_now, sl_price, df.index[-1], custom_target=target_price)
 
         return {
@@ -332,7 +293,6 @@ def strategy_bollinger_mid(ticker, name, df, backtest_months):
         if v_now < 500_000: return None
         if c_now < ta.trend.sma_indicator(close, 120).iloc[-1]: return None 
         
-        # 中線策略用 20MA
         indicator_bb = ta.volatility.BollingerBands(close=close, window=20, window_dev=2)
         bb_mavg = indicator_bb.bollinger_mavg()
         bb_hband = indicator_bb.bollinger_hband()
@@ -426,7 +386,7 @@ def strategy_weekly_breakout(ticker, name, df_daily, backtest_months):
         if v_now <= v_prev * 2.8: return None
         
         rr = calculate_risk_reward(c_now, ma5_now, df_weekly.index[-1])
-        # 週線策略不支援回測，手動補上 N/A
+        # 週線策略不回測，顯示 N/A
         return {"代號": ticker, "名稱": name, "現價": round(c_now, 2), **rr, "回測勝率": "N/A", "平均獲利": "-", "總交易": "-", "本週量(張)": int(v_now/1000), "爆量倍數": f"{round(v_now/v_prev, 1)}倍", "外資詳情": get_chip_link(ticker), "狀態": "週線爆量 🔥"}
     except: return None
 
@@ -544,7 +504,6 @@ if st.button("開始掃描", type="primary"):
                 if "回測勝率" in df_res.columns:
                     target_cols += ["回測勝率", "平均獲利", "總交易"]
                 
-                # 確保欄位不重複並保留原始資料
                 other_cols = [c for c in df_res.columns if c not in target_cols]
                 
                 st.dataframe(
