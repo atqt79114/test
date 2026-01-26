@@ -119,7 +119,7 @@ def calculate_risk_reward(c_now, sl_price, date_now, custom_target=None):
     }
 
 # -------------------------------------------------
-# 核心：回測引擎
+# 核心：回測引擎 (修復日線策略邏輯)
 # -------------------------------------------------
 def run_backtest(df, strategy_type, months):
     try:
@@ -142,7 +142,9 @@ def run_backtest(df, strategy_type, months):
         
         # 預先計算需要的指標
         ma5 = ta.trend.sma_indicator(close, 5)
+        ma10 = ta.trend.sma_indicator(close, 10) # 補回 MA10
         ma20 = ta.trend.sma_indicator(close, 20)
+        ma60 = ta.trend.sma_indicator(close, 60) # 補回 MA60
         ma120 = ta.trend.sma_indicator(close, 120)
         
         bb20 = ta.volatility.BollingerBands(close=close, window=20, window_dev=2)
@@ -181,7 +183,7 @@ def run_backtest(df, strategy_type, months):
             # [日線策略通用過濾]
             if not is_weekly and volume.iloc[i] < 500_000: continue
 
-            # 策略：中線策略 (20MA)
+            # 1. 策略：中線策略 (20MA)
             if strategy_type == "bollinger_mid":
                 if c_curr > ma120.iloc[i]:
                     mid = bb20.bollinger_mavg().iloc[i]
@@ -191,16 +193,29 @@ def run_backtest(df, strategy_type, months):
                             curr_sl = mid * 0.97
                             curr_tp = bb20.bollinger_hband().iloc[i]
 
-            # 策略：洗盤 (Washout)
+            # 2. 策略：洗盤 (Washout) - [已修復邏輯]
             elif strategy_type == "washout":
-                if c_curr > ma120.iloc[i]:
-                      pass
+                # 模擬條件：均線多頭排列 + 帶量站回 5MA
+                if c_curr > ma20.iloc[i] and c_curr > ma60.iloc[i]:
+                    # 昨日在5MA下，今日站上5MA (轉強)
+                    if close.iloc[i-1] < ma5.iloc[i-1] and c_curr > ma5.iloc[i]:
+                         # 帶量紅K
+                         if c_curr > open_p.iloc[i] and volume.iloc[i] > volume.iloc[i-1]:
+                            signal = True
+                            curr_sl = ma20.iloc[i] # 跌破月線停損
+                            curr_tp = c_curr * 1.15 # 預期15%獲利
 
-            # 策略：盤整突破
+            # 3. 策略：盤整突破 - [已修復邏輯]
             elif strategy_type == "consolidation":
-                 pass
+                 # 模擬條件：均線糾結後 + 爆量長紅突破
+                 if c_curr > ma5.iloc[i] and c_curr > ma20.iloc[i] and c_curr > ma60.iloc[i]:
+                     # 實體紅K > 3% 且 成交量放大 1.5 倍
+                     if (c_curr - open_p.iloc[i])/open_p.iloc[i] > 0.03 and volume.iloc[i] > volume.iloc[i-1]*1.5:
+                         signal = True
+                         curr_sl = open_p.iloc[i] # 跌破起漲點停損
+                         curr_tp = c_curr * 1.2 # 預期20%波段獲利
 
-            # 策略：週線回檔守 5MA 回測
+            # 4. 策略：週線回檔守 5MA 回測
             elif strategy_type == "weekly_pullback":
                 # i = 本週, i-1 = 上週
                 c_prev = close.iloc[i-1]; o_prev = open_p.iloc[i-1]; v_prev = volume.iloc[i-1]
