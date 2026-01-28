@@ -314,7 +314,7 @@ def strategy_washout_rebound(ticker, name, df, backtest_months):
         # --- [NEW] 新增乖離率過濾 ---
         # 邏輯：現價距離 5MA 不超過 6%
         bias_5 = ((c_now - ma5_now) / ma5_now) * 100
-        if bias_5 > 6: return None
+        if bias_5 > 4: return None
         # ---------------------------
 
         bt_res = run_backtest(df, "washout", backtest_months)
