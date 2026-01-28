@@ -29,6 +29,7 @@ st.markdown("""
 
 2.  **🛁 爆量回檔** & **📦 盤整突破**：
     * 經典動能策略，需站上 120MA，賺賠比 1:1.5。
+    * **[新增] 爆量回檔乖離率限制**：收盤價距離 5MA 不可超過 **6%**。
 
 3.  **🔥 週線盤整突破**：
     * 週線爆量 2.8 倍以上。
@@ -142,9 +143,9 @@ def run_backtest(df, strategy_type, months):
         
         # 預先計算需要的指標
         ma5 = ta.trend.sma_indicator(close, 5)
-        ma10 = ta.trend.sma_indicator(close, 10) # 補回 MA10
+        ma10 = ta.trend.sma_indicator(close, 10) 
         ma20 = ta.trend.sma_indicator(close, 20)
-        ma60 = ta.trend.sma_indicator(close, 60) # 補回 MA60
+        ma60 = ta.trend.sma_indicator(close, 60) 
         ma120 = ta.trend.sma_indicator(close, 120)
         
         bb20 = ta.volatility.BollingerBands(close=close, window=20, window_dev=2)
@@ -201,19 +202,21 @@ def run_backtest(df, strategy_type, months):
                     if close.iloc[i-1] < ma5.iloc[i-1] and c_curr > ma5.iloc[i]:
                          # 帶量紅K
                          if c_curr > open_p.iloc[i] and volume.iloc[i] > volume.iloc[i-1]:
-                            signal = True
-                            curr_sl = ma20.iloc[i] # 跌破月線停損
-                            curr_tp = c_curr * 1.15 # 預期15%獲利
+                            # 回測時加上寬鬆一點的乖離率檢查 (可選)
+                            if (c_curr - ma5.iloc[i]) / ma5.iloc[i] < 0.08:
+                                signal = True
+                                curr_sl = ma20.iloc[i] # 跌破月線停損
+                                curr_tp = c_curr * 1.15 # 預期15%獲利
 
             # 3. 策略：盤整突破 - [已修復邏輯]
             elif strategy_type == "consolidation":
                  # 模擬條件：均線糾結後 + 爆量長紅突破
                  if c_curr > ma5.iloc[i] and c_curr > ma20.iloc[i] and c_curr > ma60.iloc[i]:
-                     # 實體紅K > 3% 且 成交量放大 1.5 倍
-                     if (c_curr - open_p.iloc[i])/open_p.iloc[i] > 0.03 and volume.iloc[i] > volume.iloc[i-1]*1.5:
-                         signal = True
-                         curr_sl = open_p.iloc[i] # 跌破起漲點停損
-                         curr_tp = c_curr * 1.2 # 預期20%波段獲利
+                      # 實體紅K > 3% 且 成交量放大 1.5 倍
+                      if (c_curr - open_p.iloc[i])/open_p.iloc[i] > 0.03 and volume.iloc[i] > volume.iloc[i-1]*1.5:
+                          signal = True
+                          curr_sl = open_p.iloc[i] # 跌破起漲點停損
+                          curr_tp = c_curr * 1.2 # 預期20%波段獲利
 
             # 4. 策略：週線回檔守 5MA 回測
             elif strategy_type == "weekly_pullback":
@@ -286,6 +289,7 @@ def strategy_bollinger_mid(ticker, name, df, backtest_months):
         }
     except Exception: return None
 
+# === 修改重點：加入乖離率 < 6% 過濾 ===
 def strategy_washout_rebound(ticker, name, df, backtest_months):
     try:
         if len(df) < 125: return None
@@ -307,9 +311,25 @@ def strategy_washout_rebound(ticker, name, df, backtest_months):
         if v_curr >= v_prev: return None 
         if not (c_now > ma5_now and c_now > ma10.iloc[-1] and c_now > ma20.iloc[-1] and c_now > ma60.iloc[-1] and c_now > ma120.iloc[-1]): return None
         
+        # --- [NEW] 新增乖離率過濾 ---
+        # 邏輯：現價距離 5MA 不超過 6%
+        bias_5 = ((c_now - ma5_now) / ma5_now) * 100
+        if bias_5 > 6: return None
+        # ---------------------------
+
         bt_res = run_backtest(df, "washout", backtest_months)
         rr = calculate_risk_reward(c_now, ma5_now, df.index[-1])
-        return {"代號": ticker, "名稱": name, "現價": round(c_now, 2), **rr, **(bt_res or {}), "外資詳情": get_chip_link(ticker), "狀態": "強勢洗盤 🛁"}
+        
+        return {
+            "代號": ticker, 
+            "名稱": name, 
+            "現價": round(c_now, 2), 
+            "5日乖離率": f"{round(bias_5, 2)}%",  # 顯示乖離率
+            **rr, 
+            **(bt_res or {}), 
+            "外資詳情": get_chip_link(ticker), 
+            "狀態": "強勢洗盤 🛁"
+        }
     except: return None
 
 def strategy_consolidation(ticker, name, df, backtest_months):
@@ -540,6 +560,9 @@ if st.button("開始掃描", type="primary"):
                 elif "上週量(張)" in df_res.columns:
                     # 優先顯示乖離率
                     target_cols = ["代號", "名稱", "現價", "5週乖離率", "本週量(張)", "上週量(張)", "停損價(SL)", "停利價(TP)", "外資詳情"]
+                elif "5日乖離率" in df_res.columns:
+                    # === 修改重點：加入 5日乖離率 到優先顯示欄位 ===
+                    target_cols = ["代號", "名稱", "現價", "5日乖離率", "停損價(SL)", "停利價(TP)", "外資詳情"]
                 else:
                     target_cols = base_cols
                 
@@ -562,4 +585,3 @@ if st.button("開始掃描", type="primary"):
                 )
         if not has_data:
             st.info("掃描完成，但沒有符合條件的股票。")
-         
