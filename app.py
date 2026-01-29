@@ -233,6 +233,35 @@ def run_backtest(df, strategy_type, months):
                     signal = True
                     curr_sl = ma5.iloc[i] * 0.98 
                     curr_tp = h_prev 
+            # ==========================================
+            # [NEW] 新增：箱體突破回測邏輯
+            # ==========================================
+            elif strategy_type == "box_breakout":
+                # 1. 趨勢濾網：在 MA120 之上
+                if c_curr < ma120.iloc[i]: continue
+
+                # 2. 定義箱體：取過去 60 天 (不含當日 i)
+                # 範圍是 i-60 到 i
+                box_lookback = 60
+                past_highs = high.iloc[i-box_lookback:i]
+                past_lows = low.iloc[i-box_lookback:i]
+                
+                box_h = past_highs.max()
+                box_l = past_lows.min()
+                
+                # 3. 箱體寬度濾網 (< 15%)
+                width = (box_h - box_l) / box_l
+                if width > 0.15: continue
+                
+                # 4. 突破訊號
+                # 今日收盤 突破 箱頂
+                # 且 今日量增 (比昨日大)
+                if c_curr > box_h and volume.iloc[i] > volume.iloc[i-1]:
+                    # 避免追高：突破幅度不超過 5%
+                    if c_curr < box_h * 1.05:
+                        signal = True
+                        curr_sl = box_l # 停損設箱底
+                        curr_tp = c_curr + (box_h - box_l) * 1.5 # 目標：一倍半箱體幅度
 
             if signal:
                 in_position = True
@@ -448,6 +477,85 @@ def strategy_weekly_pullback(ticker, name, df_daily, backtest_months):
             "狀態": "週線回檔守5MA 🛡️"
         }
     except Exception: return None
+
+# === 新增策略：箱體突破 (Box Breakout) ===
+def strategy_box_breakout(ticker, name, df, backtest_months):
+    """
+    策略：MA120之上 + 60天箱體盤整(<15%) + 今日剛突破
+    """
+    try:
+        # 1. 資料長度與流動性檢查
+        if len(df) < 130: return None
+        if df['Volume'].iloc[-1] < 500_000: return None # 成交量過濾
+
+        # 2. 準備數據
+        close = df['Close']
+        high = df['High']
+        low = df['Low']
+        volume = df['Volume']
+        
+        c_now = float(close.iloc[-1])
+        v_now = float(volume.iloc[-1])
+        v_prev = float(volume.iloc[-2])
+        
+        # 3. 趨勢濾網：股價必須在 MA120 之上
+        ma120 = ta.trend.sma_indicator(close, 120).iloc[-1]
+        if c_now < ma120: return None
+
+        # 4. 定義箱體 (重點！)
+        # 使用過去 60 天，但 **排除今天** (我們要看今天是否突破了過去形成的箱子)
+        box_days = 60
+        df_past = df.iloc[:-1] # 排除最新一天
+        
+        # 取得過去 N 天的高低點
+        past_highs = df_past['High'].tail(box_days)
+        past_lows = df_past['Low'].tail(box_days)
+        
+        box_h = float(past_highs.max())
+        box_l = float(past_lows.min())
+
+        # 5. 計算箱體寬度 (Box Width)
+        # 公式: (箱頂 - 箱底) / 箱底
+        box_width = (box_h - box_l) / box_l
+        
+        # 條件：震盪幅度需小於 15% (視為盤整)
+        if box_width > 0.15: return None 
+
+        # 6. 突破訊號判定
+        # A. 今天收盤價 > 昨天的箱頂
+        if c_now <= box_h: return None
+        
+        # B. 避免追高 (突破幅度 < 5%)
+        if c_now > box_h * 1.05: return None
+        
+        # C. 量能確認 (量增)
+        if v_now <= v_prev: return None
+
+        # 7. 執行回測
+        bt_res = run_backtest(df, "box_breakout", backtest_months)
+
+        # 8. 計算風控
+        # 停損：箱底 (保守者可用箱頂下緣，但這裡設箱底比較安全)
+        sl_price = box_l 
+        # 停利：箱體高度的 1.5 倍
+        tp_price = c_now + (box_h - box_l) * 1.5
+
+        rr = calculate_risk_reward(c_now, sl_price, df.index[-1], custom_target=tp_price)
+
+        return {
+            "代號": ticker, 
+            "名稱": name, 
+            "現價": round(c_now, 2), 
+            "箱頂(壓力)": round(box_h, 2),
+            "箱底(支撐)": round(box_l, 2),
+            "震盪幅": f"{round(box_width*100, 1)}%",
+            **rr, 
+            **(bt_res or {}),
+            "外資詳情": get_chip_link(ticker), 
+            "狀態": "🚀 箱體剛突破"
+        }
+    except Exception as e:
+        return None
 
 # -------------------------------------------------
 # 策略集合
