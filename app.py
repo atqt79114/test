@@ -657,26 +657,33 @@ if st.button("開始掃描", type="primary"):
                 df_res = pd.DataFrame(result[k])
                 
                 # 欄位顯示名稱更新
+         # ... (前面程式碼不變)
+                
+                # 欄位顯示名稱更新
                 base_cols = ["代號", "名稱", "現價", "停損價(SL)", "停利價(TP)", "外資詳情"]
                 
+                # === 修正重點：確保這裡的 if/elif 全部垂直對齊 ===
                 if "布林中線" in df_res.columns or "布林中線(10MA)" in df_res.columns:
-                      if "布林下軌" in df_res.columns: 
-                          target_cols = ["代號", "名稱", "現價", "布林下軌", "布林中線(10MA)", "停損價(SL)", "停利價(TP)", "外資詳情"]
-                      else: 
-                          target_cols = ["代號", "名稱", "現價", "布林中線", "布林上軌", "停損價(SL)", "停利價(TP)", "外資詳情"]
+                    if "布林下軌" in df_res.columns: 
+                        target_cols = ["代號", "名稱", "現價", "布林下軌", "布林中線(10MA)", "停損價(SL)", "停利價(TP)", "外資詳情"]
+                    else: 
+                        target_cols = ["代號", "名稱", "現價", "布林中線", "布林上軌", "停損價(SL)", "停利價(TP)", "外資詳情"]
+                
                 elif "爆量倍數" in df_res.columns:
                     target_cols = ["代號", "名稱", "現價", "本週量(張)", "爆量倍數", "停損價(SL)", "停利價(TP)", "外資詳情"]
+                
                 elif "上週量(張)" in df_res.columns:
                     # 優先顯示乖離率
                     target_cols = ["代號", "名稱", "現價", "5週乖離率", "本週量(張)", "上週量(張)", "停損價(SL)", "停利價(TP)", "外資詳情"]
+                
                 elif "5日乖離率" in df_res.columns:
                     # === 修改重點：加入 5日乖離率 到優先顯示欄位 ===
                     target_cols = ["代號", "名稱", "現價", "5日乖離率", "停損價(SL)", "停利價(TP)", "外資詳情"]
-              elif "箱頂(壓力)" in df_res.columns:
-                    # === [NEW] 新增：箱體突破專屬欄位顯示 ===
+                
+                elif "箱頂(壓力)" in df_res.columns:
+                    # === [NEW] 新增：箱體突破專屬欄位顯示 === (這裡原本縮排錯誤)
                     target_cols = ["代號", "名稱", "現價", "震盪幅", "箱頂(壓力)", "箱底(支撐)", "停損價(SL)", "停利價(TP)", "外資詳情"]
-                elif "5日乖離率" in df_res.columns:
-                    target_cols = ["代號", "名稱", "現價", "5日乖離率", "停損價(SL)", "停利價(TP)", "外資詳情"]
+                
                 else:
                     target_cols = base_cols
                 
@@ -688,6 +695,17 @@ if st.button("開始掃描", type="primary"):
                 
                 other_cols = [c for c in df_res.columns if c not in final_cols and c not in target_cols]
                 
+                st.dataframe(
+                    df_res[final_cols + other_cols], 
+                    use_container_width=True,
+                    column_config={
+                        "外資詳情": st.column_config.LinkColumn(
+                            "外資詳情", display_text="查看數據"
+                        )
+                    }
+                )
+        if not has_data:
+            st.info("掃描完成，但沒有符合條件的股票。")
                 st.dataframe(
                     df_res[final_cols + other_cols], 
                     use_container_width=True,
