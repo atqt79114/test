@@ -320,70 +320,116 @@ def strategy_washout_rebound(ticker, name, df, backtest_months):
 # =================================================
 def strategy_consolidation(ticker, name, df, backtest_months):
     try:
-        # -------------------------------------------------
-        # 0. 基本資料長度
-        # -------------------------------------------------
+        # === 0. 基本資料長度 ===
         if len(df) < 180:
             return None
 
         close = df["Close"]
+        open_p = df["Open"]
         volume = df["Volume"]
 
         c_now = float(close.iloc[-1])
         c_prev = float(close.iloc[-2])
         v_now = float(volume.iloc[-1])
 
-        # -------------------------------------------------
-        # 1. 排除低價股
-        # -------------------------------------------------
+        # === 1. 排除低價股 ===
         if c_now < 10:
             return None
 
-        # -------------------------------------------------
-        # 2. 當日成交量 > 1000 張
-        # -------------------------------------------------
-        if v_now < 1000 * 1000:
+        # === 2. 當日成交量 > 1000 張 ===
+        if v_now < 1_000_000:
             return None
 
-        # -------------------------------------------------
-        # 3. 當日漲幅 > 2%
-        # -------------------------------------------------
+        # === 3. 當日漲幅 > 2% ===
         pct_change = (c_now - c_prev) / c_prev
         if pct_change <= 0.02:
             return None
 
-        # -------------------------------------------------
-        # 計算均線
-        # -------------------------------------------------
+        # === 技術指標 ===
         ma5 = ta.trend.sma_indicator(close, 5)
         ma10 = ta.trend.sma_indicator(close, 10)
         ma20 = ta.trend.sma_indicator(close, 20)
         ma60 = ta.trend.sma_indicator(close, 60)
         ma120 = ta.trend.sma_indicator(close, 120)
 
-        # -------------------------------------------------
-        # 4. 股價必須在 60MA、120MA 之上
-        # -------------------------------------------------
+        # === 4. 股價必須在 60 / 120 MA 之上 ===
         if not (c_now > ma60.iloc[-1] and c_now > ma120.iloc[-1]):
             return None
 
-        # -------------------------------------------------
-        # 5. 今日 5T bias 不超過 7%
-        # -------------------------------------------------
-        bias_5_today = ((c_now - ma5.iloc[-1]) / ma5.iloc[-1]) * 100
-        if bias_5_today > 7:
+        # === 5. 今日 5T 乖離 ≤ 7% ===
+        bias_5_now = ((c_now - ma5.iloc[-1]) / ma5.iloc[-1]) * 100
+        if bias_5_now > 12:
             return None
 
-        # -------------------------------------------------
-        # 6. 近四季 EPS 必須 > 0
-        # -------------------------------------------------
+        # ==================================================
+        # 🔥 核心：視覺型「均線糾結」判斷（前 40 天）
+        # ==================================================
+        lookback = 40
+
+        ma_df = pd.DataFrame({
+            "close": close.iloc[-(lookback+1):-1],
+            "ma5": ma5.iloc[-(lookback+1):-1],
+            "ma10": ma10.iloc[-(lookback+1):-1],
+            "ma20": ma20.iloc[-(lookback+1):-1],
+            "ma60": ma60.iloc[-(lookback+1):-1],
+        })
+
+        # --- 6. 前 40 天「均線高度糾結」 ---
+        ma_max = ma_df[["ma5", "ma10", "ma20", "ma60"]].max(axis=1)
+        ma_min = ma_df[["ma5", "ma10", "ma20", "ma60"]].min(axis=1)
+        ma_bandwidth = (ma_max - ma_min) / ma_min
+
+        # 任何一天發散 > 12% 都不算糾結
+        if (ma_bandwidth > 0.12).any():
+            return None
+
+        # --- 7. 前 40 天「每天」5T 乖離 ≤ 7% ---
+        bias_5_hist = ((ma_df["close"] - ma_df["ma5"]) / ma_df["ma5"]).abs() * 100
+        if (bias_5_hist > 7).any():
+            return None
+
+        # ==================================================
+        # 🚀 今日必須「突破糾結區」
+        # ==================================================
+        max_ma_today = max(
+            ma5.iloc[-1],
+            ma10.iloc[-1],
+            ma20.iloc[-1],
+            ma60.iloc[-1],
+        )
+
+        if c_now <= max_ma_today:
+            return None
+
+        # === 8. 排除虧損股（近四季 EPS < 0） ===
         try:
-            info = yf.Ticker(ticker).info
-            eps = info.get("trailingEps")
+            eps = yf.Ticker(ticker).info.get("trailingEps")
             if eps is None or eps < 0:
                 return None
-        except Exception:
+        except:
             return None
+
+        # === 回測 + 風控 ===
+        bt_res = run_backtest(df, "consolidation", backtest_months)
+
+        sl_price = ma5.iloc[-1]
+        rr = calculate_risk_reward(c_now, sl_price, df.index[-1])
+
+        return {
+            "代號": ticker,
+            "名稱": name,
+            "現價": round(c_now, 2),
+            "漲幅": f"{round(pct_change*100, 2)}%",
+            "5日乖離率": f"{round(bias_5_now, 2)}%",
+            "EPS": round(eps, 2) if eps is not None else "N/A",
+            **rr,
+            **(bt_res or {}),
+            "狀態": "均線糾結 → 突破 🐂",
+            "外資詳情": get_chip_link(ticker)
+        }
+
+    except Exception:
+        return None
 
         # -------------------------------------------------
         # 7 + 8. 前 40 天「均線糾結 + 價格乖離限制」
