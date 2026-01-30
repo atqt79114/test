@@ -29,23 +29,22 @@ st.markdown("""
 
 2.  **🛁 爆量回檔**：
     * 經典動能策略，需站上 120MA，賺賠比 1:1.5。
-    * **爆量回檔乖離率限制**：收盤價距離 5MA 不可超過 **6%**。
+    * **乖離率限制**：收盤價距離 5MA 不可超過 **6%**。
 
-3.  **🐂 日線盤整突破 (新版)**：
+3.  **🐂 日線盤整突破 (糾結噴出版)**：
     * **趨勢**：股價 > 60MA 且 > 120MA。
+    * **糾結**：5/10/20/60 MA 均線糾結超過 **40天**。
     * **動能**：當日漲幅 > 2% 且 成交量 > 1000張。
     * **風控**：5日乖離率 < 7%。
-    * **基本面**：排除股價 < 10元、排除近四季 EPS < 0 之虧損股。
+    * **基本面**：排除 < 10元、排除虧損股 (EPS < 0)。
 
 4.  **🔥 週線盤整突破**：
     * 週線爆量 2.8 倍以上。
 
 5.  **🛡️ 週線回檔守 5MA (熱門股)**：
-    * **流動性**：**上週成交量 > 10 萬張** (過濾出高人氣股)。
+    * **流動性**：**上週成交量 > 10 萬張**。
     * **趨勢**：股價 > 週線 20MA。
-    * **上週**：紅K + 收在 5MA 之上。
-    * **本週**：**量縮黑K** + 收在 5MA 之上。
-    * **乖離率限制**：**現價與 5MA 乖離不可超過 7%** (避免追高)。
+    * **乖離率限制**：**現價與 5MA 乖離不可超過 7%**。
 
 ---
 """)
@@ -129,7 +128,6 @@ def calculate_risk_reward(c_now, sl_price, date_now, custom_target=None):
 # -------------------------------------------------
 def run_backtest(df, strategy_type, months):
     try:
-        # 判斷是日線還是週線資料來決定回測長度
         is_weekly = (strategy_type == "weekly_pullback")
         lookback = months * 4 if is_weekly else months * 22
         
@@ -142,11 +140,10 @@ def run_backtest(df, strategy_type, months):
         stop_loss_price = 0
         
         start_idx = len(df) - lookback
-        if start_idx < 25: start_idx = 25 # 確保有足夠前面資料算MA
+        if start_idx < 65: start_idx = 65 
         
         close = df["Close"]; open_p = df["Open"]; high = df["High"]; low = df["Low"]; volume = df["Volume"]
         
-        # 預先計算需要的指標
         ma5 = ta.trend.sma_indicator(close, 5)
         ma10 = ta.trend.sma_indicator(close, 10) 
         ma20 = ta.trend.sma_indicator(close, 20)
@@ -156,27 +153,21 @@ def run_backtest(df, strategy_type, months):
         bb20 = ta.volatility.BollingerBands(close=close, window=20, window_dev=2)
 
         for i in range(start_idx, len(df) - 1):
-            c_curr = close.iloc[i]; h_curr = high.iloc[i]; l_curr = low.iloc[i]
+            c_curr = close.iloc[i]; h_curr = high.iloc[i]
             
             # === 持倉檢查 ===
             if in_position:
-                # 停利：碰到目標價
                 if h_curr >= target_price: 
                     trades.append((target_price - entry_price) / entry_price)
                     in_position = False; continue
                 
-                # 停損出場
                 exit_condition = False
-                if strategy_type == "weekly_pullback":
-                    if c_curr < stop_loss_price: exit_condition = True
-                else:
-                    if c_curr < stop_loss_price: exit_condition = True 
+                if c_curr < stop_loss_price: exit_condition = True 
                 
                 if exit_condition:
                     trades.append((c_curr - entry_price) / entry_price)
                     in_position = False; continue
                 
-                # 移動停利邏輯 (部分策略)
                 if strategy_type == "bollinger_mid":
                     target_price = bb20.bollinger_hband().iloc[i]
                 continue
@@ -186,10 +177,9 @@ def run_backtest(df, strategy_type, months):
             curr_sl = 0
             curr_tp = 0
             
-            # [日線策略通用過濾]
             if not is_weekly and volume.iloc[i] < 500_000: continue
 
-            # 1. 策略：中線策略 (20MA)
+            # 1. 策略：中線策略
             if strategy_type == "bollinger_mid":
                 if c_curr > ma120.iloc[i]:
                     mid = bb20.bollinger_mavg().iloc[i]
@@ -199,7 +189,7 @@ def run_backtest(df, strategy_type, months):
                             curr_sl = mid * 0.97
                             curr_tp = bb20.bollinger_hband().iloc[i]
 
-            # 2. 策略：洗盤 (Washout)
+            # 2. 策略：洗盤
             elif strategy_type == "washout":
                 if c_curr > ma20.iloc[i] and c_curr > ma60.iloc[i]:
                     if close.iloc[i-1] < ma5.iloc[i-1] and c_curr > ma5.iloc[i]:
@@ -209,25 +199,22 @@ def run_backtest(df, strategy_type, months):
                                 curr_sl = ma20.iloc[i] 
                                 curr_tp = c_curr * 1.15
 
-            # 3. 策略：盤整突破 (舊邏輯供回測用，或可更新為新邏輯)
-            # 這裡為了簡單，回測邏輯保持基本的突破判定
+            # 3. 策略：盤整突破 (回測使用簡易邏輯)
             elif strategy_type == "consolidation":
-                 if c_curr > ma5.iloc[i] and c_curr > ma60.iloc[i] and c_curr > ma120.iloc[i]:
-                      # 簡單模擬：漲幅 > 2% 且 量增
+                 # 這裡只做簡易回測，複雜的糾結計算在實時掃描做
+                 if c_curr > ma60.iloc[i] and c_curr > ma120.iloc[i]:
                       if (c_curr - open_p.iloc[i])/open_p.iloc[i] > 0.02 and volume.iloc[i] > volume.iloc[i-1]:
                           signal = True
                           curr_sl = ma5.iloc[i] * 0.95
                           curr_tp = c_curr * 1.2
 
-            # 4. 策略：週線回檔守 5MA 回測
+            # 4. 策略：週線回檔
             elif strategy_type == "weekly_pullback":
                 c_prev = close.iloc[i-1]; o_prev = open_p.iloc[i-1]; v_prev = volume.iloc[i-1]
                 h_prev = high.iloc[i-1]
-                
                 if v_prev < 100000 * 1000: continue
                 if c_curr < ma20.iloc[i]: continue
                 if not (c_prev > o_prev and c_prev > ma5.iloc[i-1]): continue
-                
                 if c_curr < open_p.iloc[i] and volume.iloc[i] < v_prev and c_curr > ma5.iloc[i]:
                     signal = True
                     curr_sl = ma5.iloc[i] * 0.98 
@@ -329,27 +316,24 @@ def strategy_washout_rebound(ticker, name, df, backtest_months):
     except: return None
 
 # =================================================
-#  🎯 修改後的策略：日線盤整突破 (含基本面過濾)
+#  🎯 修改後的策略：日線盤整突破 (糾結 + 噴出)
 # =================================================
 def strategy_consolidation(ticker, name, df, backtest_months):
     try:
-        # --- 0. 資料長度檢查 ---
-        if len(df) < 125: return None
+        # --- 0. 資料長度檢查 (需要 120MA + 40天糾結判定) ---
+        if len(df) < 165: return None
         
         close = df["Close"]
         volume = df["Volume"]
         
-        # 取得當前與前一日數據
         c_now = float(close.iloc[-1])
         c_prev = float(close.iloc[-2])
         v_now = float(volume.iloc[-1])
         
         # --- 1. 排除低價股 (要求5) ---
-        # 股價 < 10元 排除
         if c_now < 10: return None
 
         # --- 2. 當日成交量 > 1000 張 (要求2) ---
-        # yfinance 的 volume 單位是「股」，所以 1000張 = 1,000,000 股
         if v_now < 1000 * 1000: return None
 
         # --- 3. 當日漲幅 > 2% (要求3) ---
@@ -357,37 +341,56 @@ def strategy_consolidation(ticker, name, df, backtest_months):
         if pct_change <= 0.02: return None
 
         # --- 準備技術指標 ---
-        ma5 = ta.trend.sma_indicator(close, 5).iloc[-1]
-        ma60 = ta.trend.sma_indicator(close, 60).iloc[-1]
-        ma120 = ta.trend.sma_indicator(close, 120).iloc[-1]
+        ma5 = ta.trend.sma_indicator(close, 5)
+        ma10 = ta.trend.sma_indicator(close, 10)
+        ma20 = ta.trend.sma_indicator(close, 20)
+        ma60 = ta.trend.sma_indicator(close, 60)
+        ma120 = ta.trend.sma_indicator(close, 120)
 
         # --- 4. 股價要在 60MA 與 120MA 之上 (要求1) ---
-        if not (c_now > ma60 and c_now > ma120): return None
+        if not (c_now > ma60.iloc[-1] and c_now > ma120.iloc[-1]): return None
 
         # --- 5. 乖離率 bias 5T 不超過 7% (要求4) ---
-        bias_5 = ((c_now - ma5) / ma5) * 100
+        bias_5 = ((c_now - ma5.iloc[-1]) / ma5.iloc[-1]) * 100
         if bias_5 > 7: return None
 
-        # --- 6. 排除虧損股：近四季盈餘 < 0 (要求6) ---
-        # 警告：這一步驟會顯著降低掃描速度，因為需要額外呼叫 API
-        # 策略：只有通過上述所有技術面篩選的股票，才執行這一步
+        # --- 6. [核心] 均線糾結大於 40 天 (要求7) ---
+        # 邏輯：檢查過去40天 (不含今天)，5/10/20/60 MA 的「最大差距幅度」是否都在 15% 以內
+        
+        # 取得過去40天的均線數據 (slice: -41 到 -1)
+        lookback_slice = slice(-41, -1)
+        
+        # 建立一個臨時 DataFrame 方便計算
+        ma_df = pd.DataFrame({
+            '5': ma5.iloc[lookback_slice],
+            '10': ma10.iloc[lookback_slice],
+            '20': ma20.iloc[lookback_slice],
+            '60': ma60.iloc[lookback_slice]
+        })
+        
+        # 計算每天的 (最大均線 - 最小均線) / 最小均線
+        ma_max = ma_df.max(axis=1)
+        ma_min = ma_df.min(axis=1)
+        bandwidth = (ma_max - ma_min) / ma_min
+        
+        # 如果過去 40 天中，有任何一天的均線發散程度超過 15% (0.15)，則不符合糾結定義
+        # (通常糾結會在 5%~10%，這邊設 15% 是為了包含 60MA，避免條件太嚴苛)
+        if (bandwidth > 0.15).any(): return None
+
+        # --- 7. 排除虧損股：近四季盈餘 < 0 (要求6) ---
+        # 放在最後以節省時間
         try:
             stock_info = yf.Ticker(ticker).info
-            # trailingEps 為近四季(TTM) EPS
             eps = stock_info.get('trailingEps')
-            
-            # 如果抓不到 EPS 數據(None) 或 EPS < 0，則排除
             if eps is None or eps < 0: 
                 return None
         except Exception:
-            # 如果抓取基本面失敗，保守起見先略過 (或可選擇 return None 嚴格排除)
             pass 
 
-        # --- 通過所有篩選，執行回測與計算風控 ---
+        # --- 通過所有篩選 ---
         bt_res = run_backtest(df, "consolidation", backtest_months)
         
-        # 停損建議：守 5MA 
-        sl_price = ma5
+        sl_price = ma5.iloc[-1]
         rr = calculate_risk_reward(c_now, sl_price, df.index[-1])
         
         return {
@@ -399,7 +402,7 @@ def strategy_consolidation(ticker, name, df, backtest_months):
             "EPS": eps if 'eps' in locals() and eps is not None else "N/A",
             **rr, 
             **(bt_res or {}), 
-            "狀態": "多頭轉強 🐂", 
+            "狀態": "糾結噴出 🐂", 
             "外資詳情": get_chip_link(ticker)
         }
     except Exception as e:
@@ -470,7 +473,7 @@ def strategy_weekly_pullback(ticker, name, df_daily, backtest_months):
 STRATEGIES = {
     "🌀 布林中線 (量縮黑K)": strategy_bollinger_mid,
     "🛁 爆量回檔 (洗盤)": strategy_washout_rebound,
-    "🐂 日線盤整突破 (新版)": strategy_consolidation,
+    "🐂 日線盤整突破 (糾結噴出)": strategy_consolidation,
     "🔥 週線盤整突破 (爆量2.8倍)": strategy_weekly_breakout,
     "🛡️ 週線回檔守 5MA (New!)": strategy_weekly_pullback, 
 }
@@ -574,12 +577,10 @@ if st.button("開始掃描", type="primary"):
                 elif "上週量(張)" in df_res.columns:
                     target_cols = ["代號", "名稱", "現價", "5週乖離率", "本週量(張)", "上週量(張)", "停損價(SL)", "停利價(TP)", "外資詳情"]
                 elif "5日乖離率" in df_res.columns:
-                    # 加入 5日乖離率, 漲幅, EPS 到優先顯示欄位
                     target_cols = ["代號", "名稱", "現價", "漲幅", "5日乖離率", "EPS", "停損價(SL)", "停利價(TP)", "外資詳情"]
                 else:
                     target_cols = base_cols
                 
-                # 確保欄位存在才選取
                 final_cols = [c for c in target_cols if c in df_res.columns]
                 
                 if "回測勝率" in df_res.columns:
