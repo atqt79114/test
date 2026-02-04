@@ -11,14 +11,14 @@ warnings.filterwarnings("ignore")
 # -------------------------------------------------
 # 頁面設定
 # -------------------------------------------------
-st.set_page_config(page_title="台股強勢策略篩選器", layout="wide")
-st.title("📈 台股強勢策略篩選器 (含週線回測)")
+st.set_page_config(page_title="台股潛伏策略篩選器", layout="wide")
+st.title("💤 台股潛伏/糾結策略篩選器")
 
 # === 核心：詳細策略邏輯與免責聲明 ===
 st.markdown("""
 ---
 ### ⚠️ 免責聲明：市場沒有 100% 穩贏的策略
-**所有篩選結果僅供技術分析參考，不代表買賣建議。請務必嚴格執行停損，控制風險。**
+**所有篩選結果僅供技術分析參考，不代表買賣建議。此版本專注於尋找「尚未發動」的股票，請耐心等待訊號。**
 
 ---
 #### 🧠 策略邏輯解析：
@@ -28,23 +28,19 @@ st.markdown("""
     * **停利**：布林上軌。
 
 2.  **🛁 爆量回檔**：
-    * 經典動能策略，需站上 120MA，賺賠比 1:1.5。
-    * **乖離率限制**：收盤價距離 5MA 不可超過 **6%**。
+    * 經典動能策略，需站上 120MA，乖離率限制 6%。
 
-3.  **🐂 日線盤整突破 (糾結噴出版)**：
-    * **趨勢**：股價 > 60MA 且 > 120MA。
-    * **糾結**：5/10/20/60 MA 均線糾結超過 **40天**。
-    * **動能**：當日漲幅 > 2% 且 成交量 > 1000張。
-    * **風控**：5日乖離率 < 7%。
-    * **基本面**：排除 < 10元、排除虧損股 (EPS < 0)。
+3.  **🕸️ 日線極度糾結 (潛伏版)**：
+    * **核心**：5/10/20/60 MA 四條均線**現在**黏在一起 (寬度 < 5%)。
+    * **型態**：股價波動小 (乖離 < 2%)，正在等待變盤。
+    * **濾網**：排除低價股 (<10元) 與 低量股。
+    * **用途**：適合加入自選股觀察，等待出量突破那一刻。
 
 4.  **🔥 週線盤整突破**：
     * 週線爆量 2.8 倍以上。
 
-5.  **🛡️ 週線回檔守 5MA (熱門股)**：
-    * **流動性**：**上週成交量 > 10 萬張**。
-    * **趨勢**：股價 > 週線 20MA。
-    * **乖離率限制**：**現價與 5MA 乖離不可超過 7%**。
+5.  **🛡️ 週線回檔守 5MA**：
+    * **趨勢**：股價 > 週線 20MA，回測 5MA 不破。
 
 ---
 """)
@@ -113,8 +109,8 @@ def calculate_risk_reward(c_now, sl_price, date_now, custom_target=None):
         target_price = round(custom_target, 2)
         potential_profit = (target_price - c_now) / c_now
     else:
-        target_price = round(c_now + (risk * 1.5), 2) 
-        potential_profit = (risk * 1.5) / c_now
+        target_price = round(c_now + (risk * 2.0), 2) # 潛伏股盈虧比可以拉大
+        potential_profit = (risk * 2.0) / c_now
     
     return {
         "訊號日期": date_now.strftime('%Y-%m-%d'),
@@ -179,7 +175,7 @@ def run_backtest(df, strategy_type, months):
             
             if not is_weekly and volume.iloc[i] < 500_000: continue
 
-            # 1. 策略：中線策略
+            # 1. 策略：中線
             if strategy_type == "bollinger_mid":
                 if c_curr > ma120.iloc[i]:
                     mid = bb20.bollinger_mavg().iloc[i]
@@ -199,16 +195,18 @@ def run_backtest(df, strategy_type, months):
                                 curr_sl = ma20.iloc[i] 
                                 curr_tp = c_curr * 1.15
 
-            # 3. 策略：盤整突破 (回測使用簡易邏輯)
+            # 3. 策略：極度糾結 (模擬回測比較難，這裡用簡易突破模擬)
             elif strategy_type == "consolidation":
-                 # 這裡只做簡易回測，複雜的糾結計算在實時掃描做
-                 if c_curr > ma60.iloc[i] and c_curr > ma120.iloc[i]:
-                      if (c_curr - open_p.iloc[i])/open_p.iloc[i] > 0.02 and volume.iloc[i] > volume.iloc[i-1]:
-                          signal = True
-                          curr_sl = ma5.iloc[i] * 0.95
-                          curr_tp = c_curr * 1.2
+                 # 這裡回測邏輯是：當均線很近時，如果發生小突破就進場
+                 ma_max = max(ma5.iloc[i], ma10.iloc[i], ma20.iloc[i], ma60.iloc[i])
+                 ma_min = min(ma5.iloc[i], ma10.iloc[i], ma20.iloc[i], ma60.iloc[i])
+                 bw = (ma_max - ma_min)/ma_min
+                 if bw < 0.05 and c_curr > ma_max and volume.iloc[i] > volume.iloc[i-1]:
+                      signal = True
+                      curr_sl = ma_min * 0.96
+                      curr_tp = c_curr * 1.15
 
-            # 4. 策略：週線回檔
+            # 4. 策略：週線
             elif strategy_type == "weekly_pullback":
                 c_prev = close.iloc[i-1]; o_prev = open_p.iloc[i-1]; v_prev = volume.iloc[i-1]
                 h_prev = high.iloc[i-1]
@@ -296,7 +294,6 @@ def strategy_washout_rebound(ticker, name, df, backtest_months):
         if v_curr >= v_prev: return None 
         if not (c_now > ma5_now and c_now > ma10.iloc[-1] and c_now > ma20.iloc[-1] and c_now > ma60.iloc[-1] and c_now > ma120.iloc[-1]): return None
         
-        # 乖離率過濾
         bias_5 = ((c_now - ma5_now) / ma5_now) * 100
         if bias_5 > 4: return None
 
@@ -316,180 +313,98 @@ def strategy_washout_rebound(ticker, name, df, backtest_months):
     except: return None
 
 # =================================================
-#  🎯 修改後的策略：日線盤整突破 (糾結 + 噴出)
+# 🕸️ 新策略：日線極度糾結 (潛伏中，未噴出)
 # =================================================
-def strategy_consolidation(ticker, name, df, backtest_months):
+def strategy_consolidation_latent(ticker, name, df, backtest_months):
     try:
-        # === 0. 基本資料長度 ===
-        if len(df) < 180:
-            return None
+        # === 0. 資料長度 ===
+        if len(df) < 120: return None
 
         close = df["Close"]
-        open_p = df["Open"]
         volume = df["Volume"]
-
         c_now = float(close.iloc[-1])
-        c_prev = float(close.iloc[-2])
         v_now = float(volume.iloc[-1])
 
-        # === 1. 排除低價股 ===
-        if c_now < 10:
-            return None
+        # === 1. 基礎濾網 (過濾雞蛋水餃股) ===
+        if c_now < 10: return None
+        if v_now < 500_000: return None # 成交量至少 500 張
 
-        # === 2. 當日成交量 > 1000 張 ===
-        if v_now < 1_000_000:
-            return None
-
-        # === 3. 當日漲幅 > 2% ===
-        pct_change = (c_now - c_prev) / c_prev
-        if pct_change <= 0.02:
-            return None
-
-        # === 技術指標 ===
+        # === 2. 技術指標計算 ===
         ma5 = ta.trend.sma_indicator(close, 5)
         ma10 = ta.trend.sma_indicator(close, 10)
         ma20 = ta.trend.sma_indicator(close, 20)
         ma60 = ta.trend.sma_indicator(close, 60)
-        ma120 = ta.trend.sma_indicator(close, 120)
 
-        # === 4. 股價必須在 60 / 120 MA 之上 ===
-        if not (c_now > ma60.iloc[-1] and c_now > ma120.iloc[-1]):
-            return None
+        ma5_now = ma5.iloc[-1]
+        ma10_now = ma10.iloc[-1]
+        ma20_now = ma20.iloc[-1]
+        ma60_now = ma60.iloc[-1]
 
-        # === 5. 今日 5T 乖離 ≤ 7% ===
-        bias_5_now = ((c_now - ma5.iloc[-1]) / ma5.iloc[-1]) * 100
-        if bias_5_now > 12:
+        # ==================================================
+        # 🕸️ 核心 1：極度糾結判定 (Bandwidth)
+        # 找出四條均線中，最高價與最低價的差距百分比
+        # ==================================================
+        all_mas = [ma5_now, ma10_now, ma20_now, ma60_now]
+        ma_max = max(all_mas)
+        ma_min = min(all_mas)
+        
+        # 帶寬公式：(最大均線 - 最小均線) / 最小均線
+        # 我們要求這個值非常小，例如 < 5%，代表四條線黏在一起
+        bandwidth = (ma_max - ma_min) / ma_min
+
+        if bandwidth > 0.05: # 如果發散程度超過 5%，就不算緊密糾結
             return None
 
         # ==================================================
-        # 🔥 核心：視覺型「均線糾結」判斷（前 40 天）
+        # 🤫 核心 2：正在潛伏 (不能已經大漲或大跌)
         # ==================================================
-        lookback = 40
-
-        ma_df = pd.DataFrame({
-            "close": close.iloc[-(lookback+1):-1],
-            "ma5": ma5.iloc[-(lookback+1):-1],
-            "ma10": ma10.iloc[-(lookback+1):-1],
-            "ma20": ma20.iloc[-(lookback+1):-1],
-            "ma60": ma60.iloc[-(lookback+1):-1],
-        })
-
-        # --- 6. 前 40 天「均線高度糾結」 ---
-        ma_max = ma_df[["ma5", "ma10", "ma20", "ma60"]].max(axis=1)
-        ma_min = ma_df[["ma5", "ma10", "ma20", "ma60"]].min(axis=1)
-        ma_bandwidth = (ma_max - ma_min) / ma_min
-
-        # 任何一天發散 > 12% 都不算糾結
-        if (ma_bandwidth > 0.12).any():
+        c_prev = float(close.iloc[-2])
+        pct_change = abs((c_now - c_prev) / c_prev)
+        
+        # 今天漲跌幅絕對值不能超過 3%，我們找的是平靜的股票
+        if pct_change > 0.03: 
             return None
 
-        # --- 7. 前 40 天「每天」5T 乖離 ≤ 7% ---
-        bias_5_hist = ((ma_df["close"] - ma_df["ma5"]) / ma_df["ma5"]).abs() * 100
-        if (bias_5_hist > 7).any():
+        # 價格必須就在 20MA 附近 (乖離率 < 2%)
+        bias_20 = abs((c_now - ma20_now) / ma20_now)
+        if bias_20 > 0.02:
             return None
 
         # ==================================================
-        # 🚀 今日必須「突破糾結區」
+        # 📊 核心 3：基本面濾網 (避免選到快下市的垃圾)
         # ==================================================
-        max_ma_today = max(
-            ma5.iloc[-1],
-            ma10.iloc[-1],
-            ma20.iloc[-1],
-            ma60.iloc[-1],
-        )
-
-        if c_now <= max_ma_today:
-            return None
-
-        # === 8. 排除虧損股（近四季 EPS < 0） ===
+        eps = "N/A"
         try:
-            eps = yf.Ticker(ticker).info.get("trailingEps")
-            if eps is None or eps < 0:
+            stock_info = yf.Ticker(ticker).info
+            eps = stock_info.get("trailingEps")
+            if eps is None or eps < 0: # 排除虧損股
                 return None
         except:
-            return None
+            pass
 
         # === 回測 + 風控 ===
-        bt_res = run_backtest(df, "consolidation", backtest_months)
-
-        sl_price = ma5.iloc[-1]
+        # 因為是潛伏股，停損設在糾結區下緣 (最小均線 * 0.96)
+        sl_price = ma_min * 0.96
+        
+        # 停利目標：因為還沒噴出，先看布林通道上軌或給一個 1:2 的期望值
         rr = calculate_risk_reward(c_now, sl_price, df.index[-1])
+        bt_res = run_backtest(df, "consolidation", backtest_months)
 
         return {
             "代號": ticker,
             "名稱": name,
             "現價": round(c_now, 2),
-            "漲幅": f"{round(pct_change*100, 2)}%",
-            "5日乖離率": f"{round(bias_5_now, 2)}%",
-            "EPS": round(eps, 2) if eps is not None else "N/A",
+            "糾結度": f"{round(bandwidth*100, 2)}%", # 越小越好
+            "乖離率": f"{round(bias_20*100, 2)}%",
+            "EPS": round(eps, 2) if isinstance(eps, (int, float)) else "N/A",
             **rr,
             **(bt_res or {}),
-            "狀態": "均線糾結 → 突破 🐂",
+            "狀態": "均線黏合潛伏中 🕸️",
             "外資詳情": get_chip_link(ticker)
         }
 
     except Exception:
         return None
-
-        # -------------------------------------------------
-        # 7 + 8. 前 40 天「均線糾結 + 價格乖離限制」
-        # -------------------------------------------------
-        lookback = 40
-        ma_df = pd.DataFrame({
-            "ma5": ma5.iloc[-(lookback+1):-1],
-            "ma10": ma10.iloc[-(lookback+1):-1],
-            "ma20": ma20.iloc[-(lookback+1):-1],
-            "ma60": ma60.iloc[-(lookback+1):-1],
-            "close": close.iloc[-(lookback+1):-1]
-        })
-
-        # --- (A) 均線糾結判斷 ---
-        ma_max = ma_df[["ma5","ma10","ma20","ma60"]].max(axis=1)
-        ma_min = ma_df[["ma5","ma10","ma20","ma60"]].min(axis=1)
-        ma_bandwidth = (ma_max - ma_min) / ma_min
-
-        # 任一天均線發散超過 12% → 不算糾結
-        if (ma_bandwidth > 0.12).any():
-            return None
-
-        # --- (B) 過去 40 天「價格 bias 5T 都不能 > 7%」 ---
-        bias_5_history = ((ma_df["close"] - ma_df["ma5"]) / ma_df["ma5"]) * 100
-        if (bias_5_history > 7).any():
-            return None
-
-        # -------------------------------------------------
-        # 8. 今日必須「突破糾結區」
-        # -------------------------------------------------
-        max_ma_today = max(ma5.iloc[-1], ma10.iloc[-1], ma20.iloc[-1], ma60.iloc[-1])
-
-        # 收盤價要明確站在所有短中期均線之上
-        if c_now <= max_ma_today:
-            return None
-
-        # -------------------------------------------------
-        # 回測 & 風控
-        # -------------------------------------------------
-        bt_res = run_backtest(df, "consolidation", backtest_months)
-
-        sl_price = ma5.iloc[-1]
-        rr = calculate_risk_reward(c_now, sl_price, df.index[-1])
-
-        return {
-            "代號": ticker,
-            "名稱": name,
-            "現價": round(c_now, 2),
-            "漲幅": f"{round(pct_change*100, 2)}%",
-            "5日乖離率": f"{round(bias_5_today, 2)}%",
-            "EPS": eps,
-            **rr,
-            **(bt_res or {}),
-            "狀態": "40日糾結後突破 🐂",
-            "外資詳情": get_chip_link(ticker)
-        }
-
-    except Exception:
-        return None
-
 
 def strategy_weekly_breakout(ticker, name, df_daily, backtest_months):
     try:
@@ -556,9 +471,9 @@ def strategy_weekly_pullback(ticker, name, df_daily, backtest_months):
 STRATEGIES = {
     "🌀 布林中線 (量縮黑K)": strategy_bollinger_mid,
     "🛁 爆量回檔 (洗盤)": strategy_washout_rebound,
-    "🐂 日線盤整突破 (糾結噴出)": strategy_consolidation,
+    "🕸️ 日線極度糾結 (潛伏中)": strategy_consolidation_latent, # 改名了
     "🔥 週線盤整突破 (爆量2.8倍)": strategy_weekly_breakout,
-    "🛡️ 週線回檔守 5MA (New!)": strategy_weekly_pullback, 
+    "🛡️ 週線回檔守 5MA": strategy_weekly_pullback, 
 }
 
 # -------------------------------------------------
@@ -659,6 +574,8 @@ if st.button("開始掃描", type="primary"):
                     target_cols = ["代號", "名稱", "現價", "本週量(張)", "爆量倍數", "停損價(SL)", "停利價(TP)", "外資詳情"]
                 elif "上週量(張)" in df_res.columns:
                     target_cols = ["代號", "名稱", "現價", "5週乖離率", "本週量(張)", "上週量(張)", "停損價(SL)", "停利價(TP)", "外資詳情"]
+                elif "糾結度" in df_res.columns:
+                    target_cols = ["代號", "名稱", "現價", "糾結度", "乖離率", "EPS", "停損價(SL)", "停利價(TP)", "外資詳情"]
                 elif "5日乖離率" in df_res.columns:
                     target_cols = ["代號", "名稱", "現價", "漲幅", "5日乖離率", "EPS", "停損價(SL)", "停利價(TP)", "外資詳情"]
                 else:
