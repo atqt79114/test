@@ -609,7 +609,7 @@ if st.button("開始掃描", type="primary"):
                 elif "上週量(張)" in df_res.columns:
                     target_cols = ["代號", "名稱", "現價", "5週乖離率", "本週量(張)", "上週量(張)", "停損價(SL)", "停利價(TP)", "外資詳情"]
                 elif "糾結度" in df_res.columns:
-                    target_cols = ["代號", "名稱", "現價", "糾結度", "乖離率", "EPS", "停損價(SL)", "停利價(TP)", "外資詳情"]
+                    target_cols = ["代號", "名稱", "現價", "產業族群", "糾結度", "乖離率", "停損價(SL)", "停利價(TP)", "外資詳情"]
                 elif "5日乖離率" in df_res.columns:
                     target_cols = ["代號", "名稱", "現價", "漲幅", "5日乖離率", "EPS", "停損價(SL)", "停利價(TP)", "外資詳情"]
                 else:
