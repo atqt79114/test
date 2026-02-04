@@ -339,35 +339,33 @@ def strategy_consolidation_latent(ticker, name, df, backtest_months):
         ma10_now = ma10.iloc[-1]
         ma20_now = ma20.iloc[-1]
         ma60_now = ma60.iloc[-1]
-
         # ==================================================
         # 🕸️ 核心 1：極度糾結判定 (Bandwidth)
-        # 找出四條均線中，最高價與最低價的差距百分比
         # ==================================================
         all_mas = [ma5_now, ma10_now, ma20_now, ma60_now]
         ma_max = max(all_mas)
         ma_min = min(all_mas)
         
-        # 帶寬公式：(最大均線 - 最小均線) / 最小均線
-        # 我們要求這個值非常小，例如 < 5%，代表四條線黏在一起
+        # 【修改點】為了抓出像你圖片那樣緊密的糾結，我们将寬容度從 5% 降到 3.5%
+        # 這代表四條均線必須黏得非常非常緊
         bandwidth = (ma_max - ma_min) / ma_min
 
-        if bandwidth > 0.05: # 如果發散程度超過 5%，就不算緊密糾結
+        if bandwidth > 0.035: # 更嚴格！超過 3.5% 發散就不算
             return None
 
         # ==================================================
-        # 🤫 核心 2：正在潛伏 (不能已經大漲或大跌)
+        # 🤫 核心 2：正在潛伏 (更嚴格的波動限制)
         # ==================================================
         c_prev = float(close.iloc[-2])
         pct_change = abs((c_now - c_prev) / c_prev)
         
-        # 今天漲跌幅絕對值不能超過 3%，我們找的是平靜的股票
-        if pct_change > 0.03: 
+        # 【修改點】你圖片中的 K 棒都很短，所以我們限制當天波動不能超過 2.5%
+        if pct_change > 0.025: 
             return None
 
-        # 價格必須就在 20MA 附近 (乖離率 < 2%)
+        # 價格必須死守在 20MA 附近 (乖離率 < 1.5%)
         bias_20 = abs((c_now - ma20_now) / ma20_now)
-        if bias_20 > 0.02:
+        if bias_20 > 0.015:
             return None
 
         # ==================================================
