@@ -325,11 +325,13 @@ def strategy_consolidation_latent(ticker, name, df, backtest_months):
         c_now = float(close.iloc[-1])
         v_now = float(volume.iloc[-1])
 
-        # === 1. 基礎濾網 (過濾雞蛋水餃股) ===
+        # === 1. 基礎濾網 ===
         if c_now < 10: return None
-        if v_now < 1_000_000: return None # 成交量至少 500 張
-        if ticker.startswith("28"): return None
-        
+        if v_now < 1_000_000: return None 
+
+        # 排除金融股 (代碼 28 開頭)
+        if ticker.startswith("28"): 
+            return None
 
         # === 2. 技術指標計算 ===
         ma5 = ta.trend.sma_indicator(close, 5)
@@ -341,20 +343,52 @@ def strategy_consolidation_latent(ticker, name, df, backtest_months):
         ma10_now = ma10.iloc[-1]
         ma20_now = ma20.iloc[-1]
         ma60_now = ma60.iloc[-1]
-        # ==================================================
-        # 🕸️ 核心 1：極度糾結判定 (Bandwidth)
-        # ==================================================
+
+        # 🕸️ 核心 1：極度糾結判定 (Bandwidth < 3.5%)
         all_mas = [ma5_now, ma10_now, ma20_now, ma60_now]
         ma_max = max(all_mas)
         ma_min = min(all_mas)
-        
-        # 【修改點】為了抓出像你圖片那樣緊密的糾結，我们将寬容度從 5% 降到 3.5%
-        # 這代表四條均線必須黏得非常非常緊
         bandwidth = (ma_max - ma_min) / ma_min
+        if bandwidth > 0.035: return None
 
-        if bandwidth > 0.035: # 更嚴格！超過 3.5% 發散就不算
-            return None
+        # 🤫 核心 2：正在潛伏 (波動與乖離限制)
+        c_prev = float(close.iloc[-2])
+        pct_change = abs((c_now - c_prev) / c_prev)
+        if pct_change > 0.025: return None
 
+        bias_20 = abs((c_now - ma20_now) / ma20_now)
+        if bias_20 > 0.015: return None
+
+        # ==================================================
+        # 🏢 新增：抓取產業族群 (Sector/Industry)
+        # ==================================================
+        stock_sector = "未知族群"
+        try:
+            info = yf.Ticker(ticker).info
+            # 優先抓取中文或細分行業，若無則抓取板塊
+            stock_sector = info.get("industryDisp", info.get("industry", info.get("sector", "未知")))
+        except:
+            pass
+
+        # === 回測 + 風控 ===
+        sl_price = ma_min * 0.96
+        rr = calculate_risk_reward(c_now, sl_price, df.index[-1])
+        bt_res = run_backtest(df, "consolidation", backtest_months)
+
+        return {
+            "代號": ticker,
+            "名稱": name,
+            "現價": round(c_now, 2),
+            "產業族群": stock_sector,  # 替換 EPS 欄位
+            "糾結度": f"{round(bandwidth*100, 2)}%", 
+            "乖離率": f"{round(bias_20*100, 2)}%",
+            **rr,
+            **(bt_res or {}),
+            "狀態": "均線黏合潛伏中 🕸️",
+            "外資詳情": get_chip_link(ticker)
+        }
+    except Exception:
+        return None
         # ==================================================
         # 🤫 核心 2：正在潛伏 (更嚴格的波動限制)
         # ==================================================
