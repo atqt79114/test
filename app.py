@@ -328,8 +328,8 @@ def strategy_consolidation_latent(ticker, name, df, backtest_months):
         # === 1. 基礎濾網 (過濾雞蛋水餃股) ===
         if c_now < 10: return None
         if v_now < 1_000_000: return None # 成交量至少 500 張
-        if ticker.startswith("28"): 
-        return None
+        if ticker.startswith("28"): return None
+        
 
         # === 2. 技術指標計算 ===
         ma5 = ta.trend.sma_indicator(close, 5)
