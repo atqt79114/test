@@ -427,8 +427,8 @@ def strategy_strong_trend_ma5(ticker, name, df, backtest_months):
             return None
 
         # ========= 核心 K 棒條件 =========
-        # 1️⃣ 底底高
-        cond_higher_low = l_now > l_prev
+        # 1️⃣ 假跌破
+        cond_higher_low = l_now < l_prev
 
         # 2️⃣ 盤中跌破 5MA（用最低點判斷）
         cond_intraday_break = l_now < ma5_now
