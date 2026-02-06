@@ -445,8 +445,33 @@ def strategy_strong_trend_ma5(ticker, name, df, backtest_months):
         # 條件B: 今日低點 < 5MA (盤中虛破，清洗浮額)
         cond_break_ma5 = l_now < ma5_now
         
-        # 條件C: 今日收盤 > 5MA (強勢站回)
+        # 條件C: 今日收盤 > 10MA (強勢站回)
         cond_reclaim = c_now > ma10_now
+        
+        if cond_higher_low and cond_break_ma5 and cond_reclaim:
+            # 計算回測與風控
+            bt_res = run_backtest(df, "strong_trend_ma5", backtest_months)
+            
+            # 停損設今日低點 (雖未破昨低，但若破今低代表強勢慣性改變)
+            sl_price = l_now 
+            rr = calculate_risk_reward(c_now, sl_price, df.index[-1])
+            
+            return {
+                "代號": ticker, 
+                "名稱": name, 
+                "現價": round(c_now, 2), 
+                "今日低點": round(l_now, 2),
+                "昨日低點": round(l_prev, 2),
+                "5MA": round(ma5_now, 2),
+                **rr, 
+                **(bt_res or {}), 
+                "外資詳情": get_chip_link(ticker), 
+                "狀態": "強勢回測(底底高) ⚡"
+            }
+        
+        return None
+    except Exception as e:
+        return None
 
 # -------------------------------------------------
 # 策略集合
