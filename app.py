@@ -203,12 +203,12 @@ def run_backtest(df, strategy_type, months):
          # 4. 策略：日線突破 (取代原本的 consolidation)
             elif strategy_type == "breakout_20d":
                  # 確保有足夠歷史資料
-                 if i < 22: continue
+                 if i < 5: continue
                  
                  # 過去 20 天 (不含當天 i) 的最高價
                  past_high = high.iloc[i-20:i].max()
                  
-                 # 條件：收盤價突破過去 20 天最高價
+                 # 條件：收盤價突破過去 5 天最高價
                  if c_curr > past_high:
                      # 確保之前沒有剛突破過 (避免連續訊號)，選擇性加入
                      # if close.iloc[i-1] <= high.iloc[i-21:i-1].max():
@@ -223,7 +223,7 @@ def run_backtest(df, strategy_type, months):
                 if c_curr < ma120.iloc[i]: continue
                 
                 l_prev = float(low.iloc[i-1])
-                ma5_curr = float(ma5.iloc[i])
+                ma10_curr = float(ma10.iloc[i])
                 
                 # 條件：今日低 > 昨日低 AND 今日低 < 10MA AND 收盤 > 5MA
                 if l_curr > l_prev and l_curr < ma10_curr and c_curr > ma10_curr:
