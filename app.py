@@ -201,7 +201,7 @@ def run_backtest(df, strategy_type, months):
                                 curr_sl = ma20.iloc[i] 
                                 curr_tp = c_curr * 1.15
          # 4. 策略：日線突破 (取代原本的 consolidation)
-          elif strategy_type == "breakout_20d":
+            elif strategy_type == "breakout_20d":
                  # 確保有足夠歷史資料
                  if i < 22: continue
                  
