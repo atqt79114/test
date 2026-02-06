@@ -396,69 +396,70 @@ def strategy_weekly_breakout(ticker, name, df_daily, backtest_months):
         return {"代號": ticker, "名稱": name, "現價": round(c_now, 2), **rr, "回測勝率": "N/A", "平均獲利": "-", "總交易": "-", "本週量(張)": int(v_now/1000), "爆量倍數": f"{round(v_now/v_prev, 1)}倍", "外資詳情": get_chip_link(ticker), "狀態": "週線爆量 🔥"}
     except: return None
 
-# =================================================
-# ⚡ 新增策略：強勢回測 5MA (底底高)
-# =================================================
 def strategy_strong_trend_ma5(ticker, name, df, backtest_months):
     try:
-        if len(df) < 130: return None
-        close = df["Close"]; low = df["Low"]; volume = df["Volume"]
-        
+        if len(df) < 130:
+            return None
+
+        close = df["Close"]
+        low = df["Low"]
+        volume = df["Volume"]
+
         c_now = float(close.iloc[-1])
         l_now = float(low.iloc[-1])
+        l_prev = float(low.iloc[-2])
         v_now = float(volume.iloc[-1])
-        
-        # 1. 濾網條件
-        # 成交量 > 1000張 (1,000,000股)
-        if v_now < 1_000_000: return None 
-        
-        # 排除 20 元以下低價股
-        if c_now <= 20: return None
+
+        # ========= 基本濾網 =========
+        if v_now < 1_000_000:     # 至少 1000 張
+            return None
+        if c_now <= 20:           # 排除低價股
+            return None
 
         ma5 = ta.trend.sma_indicator(close, 5)
         ma120 = ta.trend.sma_indicator(close, 120)
-        
+
         ma5_now = float(ma5.iloc[-1])
         ma120_now = float(ma120.iloc[-1])
-        
-        # 股價必須在 120MA 之上 (長線多頭)
-        if c_now <= ma120_now: return None
 
-        # 2. 策略核心邏輯
-        l_prev = float(low.iloc[-2])
-        
-        # 條件A: 今日低點 > 昨日低點 (底底高，多頭強勢)
+        # 長線多頭
+        if c_now <= ma120_now:
+            return None
+
+        # ========= 核心 K 棒條件 =========
+        # 1️⃣ 底底高
         cond_higher_low = l_now > l_prev
-        
-        # 條件B: 今日低點 < 5MA (盤中虛破，清洗浮額)
-        cond_break_ma5 = l_now < ma5_now
-        
-        # 條件C: 今日收盤 > 5MA (強勢站回)
-        cond_reclaim = c_now > ma5_now
-        
-        if cond_higher_low and cond_break_ma5 and cond_reclaim:
-            # 計算回測與風控
+
+        # 2️⃣ 盤中跌破 5MA（用最低點判斷）
+        cond_intraday_break = l_now < ma5_now
+
+        # 3️⃣ 收盤拉回 5MA 上方（避免剛好貼線）
+        cond_reclaim_ma5 = c_now > ma5_now * 1.001
+
+        if cond_higher_low and cond_intraday_break and cond_reclaim_ma5:
+
             bt_res = run_backtest(df, "strong_trend_ma5", backtest_months)
-            
-            # 停損設今日低點 (雖未破昨低，但若破今低代表強勢慣性改變)
-            sl_price = l_now 
+
+            # 停損：今日低點（強勢股不該再破）
+            sl_price = l_now
             rr = calculate_risk_reward(c_now, sl_price, df.index[-1])
-            
+
             return {
-                "代號": ticker, 
-                "名稱": name, 
-                "現價": round(c_now, 2), 
+                "代號": ticker,
+                "名稱": name,
+                "現價": round(c_now, 2),
                 "今日低點": round(l_now, 2),
                 "昨日低點": round(l_prev, 2),
                 "5MA": round(ma5_now, 2),
-                **rr, 
-                **(bt_res or {}), 
-                "外資詳情": get_chip_link(ticker), 
-                "狀態": "強勢回測(底底高) ⚡"
+                **rr,
+                **(bt_res or {}),
+                "外資詳情": get_chip_link(ticker),
+                "狀態": "強勢回測 5MA（底底高洗盤）⚡"
             }
-        
+
         return None
-    except Exception as e:
+
+    except Exception:
         return None
 
 # -------------------------------------------------
