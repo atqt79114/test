@@ -200,17 +200,22 @@ def run_backtest(df, strategy_type, months):
                                 signal = True
                                 curr_sl = ma20.iloc[i] 
                                 curr_tp = c_curr * 1.15
-
-            # 3. 策略：極度糾結
-            elif strategy_type == "consolidation":
-                 ma_max = max(ma5.iloc[i], ma10.iloc[i], ma20.iloc[i], ma60.iloc[i])
-                 ma_min = min(ma5.iloc[i], ma10.iloc[i], ma20.iloc[i], ma60.iloc[i])
-                 if ma_min == 0: continue
-                 bw = (ma_max - ma_min)/ma_min
-                 if bw < 0.05 and c_curr > ma_max and volume.iloc[i] > volume.iloc[i-1]:
-                        signal = True
-                        curr_sl = ma_min * 0.96
-                        curr_tp = c_curr * 1.15
+         # 4. 策略：日線突破 (取代原本的 consolidation)
+          elif strategy_type == "breakout_20d":
+                 # 確保有足夠歷史資料
+                 if i < 22: continue
+                 
+                 # 過去 20 天 (不含當天 i) 的最高價
+                 past_high = high.iloc[i-20:i].max()
+                 
+                 # 條件：收盤價突破過去 20 天最高價
+                 if c_curr > past_high:
+                     # 確保之前沒有剛突破過 (避免連續訊號)，選擇性加入
+                     # if close.iloc[i-1] <= high.iloc[i-21:i-1].max():
+                     
+                     signal = True
+                     curr_sl = past_high # 停損設在突破點
+                     curr_tp = c_curr * 1.2 # 預設 20% 獲利
 
             # 5. 策略：強勢回測 (底底高)
             elif strategy_type == "strong_trend_ma5":
@@ -327,58 +332,65 @@ def strategy_washout_rebound(ticker, name, df, backtest_months):
         }
     except: return None
 
-def strategy_consolidation_latent(ticker, name, df, backtest_months):
+# =================================================
+# 🚀 修改後的策略：日線突破 (創20日新高)
+# =================================================
+def strategy_daily_breakout_20d(ticker, name, df, backtest_months):
     try:
-        if len(df) < 120: return None
-        close = df["Close"]; volume = df["Volume"]
-        c_now = float(close.iloc[-1]); v_now = float(volume.iloc[-1])
-
-        if c_now < 10: return None
+        # 資料長度檢查 (至少要有 120MA + 緩衝)
+        if len(df) < 130: return None
+        
+        close = df["Close"]
+        high = df["High"]
+        volume = df["Volume"]
+        
+        c_now = float(close.iloc[-1])
+        v_now = float(volume.iloc[-1])
+        
+        # 1. 基本濾網
+        # 排除 20 元以下
+        if c_now <= 20: return None
+        
+        # 成交量 > 1000 張 (Yahoo Finance 單位是股，所以是 1,000,000)
         if v_now < 1_000_000: return None 
-        if ticker.startswith("28"): return None
 
-        ma5 = ta.trend.sma_indicator(close, 5)
-        ma10 = ta.trend.sma_indicator(close, 10)
-        ma20 = ta.trend.sma_indicator(close, 20)
-        ma60 = ta.trend.sma_indicator(close, 60)
+        # 2. 趨勢濾網：股價 > 120MA
+        ma120 = ta.trend.sma_indicator(close, 120)
+        if c_now <= ma120.iloc[-1]: return None
 
-        ma5_now = ma5.iloc[-1]; ma10_now = ma10.iloc[-1]
-        ma20_now = ma20.iloc[-1]; ma60_now = ma60.iloc[-1]
-
-        all_mas = [ma5_now, ma10_now, ma20_now, ma60_now]
-        ma_max = max(all_mas); ma_min = min(all_mas)
+        # 3. 核心邏輯：突破前 20 日內的最高點
+        # 取出 "不包含今日" 的過去 20 天最高價
+        # iloc[-21:-1] 代表從倒數第 21 天到倒數第 2 天 (即昨收)
+        past_20_highs = high.iloc[-21:-1]
         
-        if ma_min == 0: return None
-        bandwidth = (ma_max - ma_min) / ma_min
-        if bandwidth > 0.04: return None
-
-        c_prev = float(close.iloc[-2])
-        if c_prev == 0: return None
+        if past_20_highs.empty: return None
+        ref_high = float(past_20_highs.max())
         
-        pct_change = abs((c_now - c_prev) / c_prev)
-        if pct_change > 0.03: return None
+        # 條件：今日收盤 突破 區間高點
+        if c_now > ref_high:
+            # === 計算回測與風控 ===
+            # 這邊稍微修改回測邏輯標籤，方便辨識
+            bt_res = run_backtest(df, "breakout_20d", backtest_months)
+            
+            # 停損建議：設在突破點 (原本的壓力變支撐) 下方一點點，或設 20MA
+            sl_price = ref_high 
+            rr = calculate_risk_reward(c_now, sl_price, df.index[-1])
 
-        bias_20 = abs((c_now - ma20_now) / ma20_now)
-        if bias_20 > 0.02: return None
-
-        stock_sector = "N/A"
-        try:
-             # stock_sector = yf.Ticker(ticker).info.get('sector', 'N/A')
-             pass
-        except: pass
-        
-        sl_price = ma_min * 0.96
-        rr = calculate_risk_reward(c_now, sl_price, df.index[-1])
-        bt_res = run_backtest(df, "consolidation", backtest_months)
-
-        return {
-            "代號": ticker, "名稱": name, "現價": round(c_now, 2),
-            "產業族群": stock_sector, "糾結度": f"{round(bandwidth*100, 2)}%", 
-            "乖離率": f"{round(bias_20*100, 2)}%",
-            **rr, **(bt_res or {}),
-            "狀態": "均線黏合潛伏中 🕸️", "外資詳情": get_chip_link(ticker)
-        }
-    except Exception: return None
+            return {
+                "代號": ticker, 
+                "名稱": name, 
+                "現價": round(c_now, 2),
+                "20日高點": round(ref_high, 2),
+                "突破幅度": f"{round(((c_now - ref_high)/ref_high)*100, 1)}%", 
+                **rr, 
+                **(bt_res or {}),
+                "狀態": "創20日新高 🚀", 
+                "外資詳情": get_chip_link(ticker)
+            }
+            
+        return None
+    except Exception as e:
+        return None
 
 def strategy_weekly_breakout(ticker, name, df_daily, backtest_months):
     try:
@@ -465,10 +477,10 @@ def strategy_strong_trend_ma5(ticker, name, df, backtest_months):
 # 策略集合
 # -------------------------------------------------
 STRATEGIES = {
-    "⚡ 強勢回測 5MA (底底高)": strategy_strong_trend_ma5, # 新增
+    "⚡ 強勢回測 5MA (底底高)": strategy_strong_trend_ma5,
+    "🚀 日線突破 (創20日新高)": strategy_daily_breakout_20d, # 這裡更新了
     "🌀 布林中線 (量縮黑K)": strategy_bollinger_mid,
     "🛁 爆量回檔 (洗盤)": strategy_washout_rebound,
-    "🕸️ 日線極度糾結 (潛伏中)": strategy_consolidation_latent,
     "🔥 週線盤整突破 (爆量2.8倍)": strategy_weekly_breakout,
 }
 
