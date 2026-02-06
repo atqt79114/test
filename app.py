@@ -225,8 +225,8 @@ def run_backtest(df, strategy_type, months):
                 l_prev = float(low.iloc[i-1])
                 ma5_curr = float(ma5.iloc[i])
                 
-                # 條件：今日低 > 昨日低 AND 今日低 < 5MA AND 收盤 > 5MA
-                if l_curr > l_prev and l_curr < ma5_curr and c_curr > ma5_curr:
+                # 條件：今日低 > 昨日低 AND 今日低 < 10MA AND 收盤 > 5MA
+                if l_curr > l_prev and l_curr < ma10_curr and c_curr > ma10_curr:
                     signal = True
                     curr_sl = l_curr 
                     curr_tp = c_curr * 1.1
@@ -358,19 +358,19 @@ def strategy_daily_breakout_20d(ticker, name, df, backtest_months):
         ma120 = ta.trend.sma_indicator(close, 120)
         if c_now <= ma120.iloc[-1]: return None
 
-        # 3. 核心邏輯：突破前 20 日內的最高點
-        # 取出 "不包含今日" 的過去 20 天最高價
-        # iloc[-21:-1] 代表從倒數第 21 天到倒數第 2 天 (即昨收)
-        past_20_highs = high.iloc[-21:-1]
+        # 3. 核心邏輯：突破前 5 日內的最高點
+        # 取出 "不包含今日" 的過去 5 天最高價
+        # iloc[-21:-1] 代表從倒數第 6 天到倒數第 2 天 (即昨收)
+        past_5_highs = high.iloc[-6:-1]
         
-        if past_20_highs.empty: return None
-        ref_high = float(past_20_highs.max())
+        if past_5_highs.empty: return None
+        ref_high = float(past_5_highs.max())
         
         # 條件：今日收盤 突破 區間高點
         if c_now > ref_high:
             # === 計算回測與風控 ===
             # 這邊稍微修改回測邏輯標籤，方便辨識
-            bt_res = run_backtest(df, "breakout_20d", backtest_months)
+            bt_res = run_backtest(df, "breakout_5d", backtest_months)
             
             # 停損建議：設在突破點 (原本的壓力變支撐) 下方一點點，或設 20MA
             sl_price = ref_high 
@@ -443,10 +443,10 @@ def strategy_strong_trend_ma5(ticker, name, df, backtest_months):
         cond_higher_low = l_now > l_prev
         
         # 條件B: 今日低點 < 5MA (盤中虛破，清洗浮額)
-        cond_break_ma5 = l_now < ma5_now
+        cond_break_ma10 = l_now < ma10_now
         
         # 條件C: 今日收盤 > 5MA (強勢站回)
-        cond_reclaim = c_now > ma5_now
+        cond_reclaim = c_now > ma10_now
         
         if cond_higher_low and cond_break_ma5 and cond_reclaim:
             # 計算回測與風控
