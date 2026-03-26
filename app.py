@@ -13,7 +13,7 @@ warnings.filterwarnings("ignore")
 # 頁面設定
 # -------------------------------------------------
 st.set_page_config(page_title="台股潛伏策略篩選器", layout="wide")
-st.title("💤 台股篩選器 (良出版)")
+st.title("💤 台股潛伏/糾結策略篩選器 (進階版)")
 
 # === 核心：詳細策略邏輯與免責聲明 ===
 st.markdown("""
@@ -77,6 +77,61 @@ def get_all_tw_tickers():
         except Exception:
             pass
     return stock_map
+
+
+# -------------------------------------------------
+# 產業族群：從證交所 & 櫃買抓取分類
+# -------------------------------------------------
+@st.cache_data(ttl=86400)
+def get_sector_map():
+    """
+    回傳 {ticker: industry_name}
+    來源：TWSE/TPEx ISIN 公告頁面，包含產業別欄位
+    Fallback：yfinance info（僅補漏用）
+    """
+    headers = {"User-Agent": "Mozilla/5.0"}
+    sector_map = {}
+
+    for mode, suffix in [("2", ".TW"), ("4", ".TWO")]:
+        try:
+            url = f"https://isin.twse.com.tw/isin/C_public.jsp?strMode={mode}"
+            r = requests.get(url, headers=headers, verify=False, timeout=10)
+            raw_df = pd.read_html(r.text)[0]
+
+            # 第一列通常是欄位標題，後續是資料
+            for row in raw_df.itertuples(index=False):
+                try:
+                    cell = str(row[0]).split()
+                    if len(cell) >= 2 and cell[0].isdigit() and len(cell[0]) == 4:
+                        code = cell[0]
+                        # 掃描各欄找產業別（非空、非數字、非nan）
+                        industry = ""
+                        for col_val in row[1:]:
+                            val = str(col_val).strip()
+                            if val and val not in ("nan", "None", "") and not val.replace(" ", "").isdigit():
+                                industry = val
+                                break
+                        if industry:
+                            sector_map[f"{code}{suffix}"] = industry
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    return sector_map
+
+
+def get_sector(ticker, sector_map):
+    """查詢單一股票的產業族群，找不到時 fallback yfinance"""
+    result = sector_map.get(ticker, "")
+    if result:
+        return result
+    try:
+        info = yf.Ticker(ticker).info
+        return info.get("industry") or info.get("sector") or "—"
+    except Exception:
+        return "—"
+
 
 # -------------------------------------------------
 # 核心：批量下載函式
@@ -713,6 +768,12 @@ if st.button("開始掃描", type="primary"):
     if not tickers:
         st.error("沒有股票代碼！")
     else:
+        # 載入產業族群對照表（有快取，第二次掃描不重抓）
+        if "sector_map" not in st.session_state:
+            with st.spinner("載入產業族群資料..."):
+                st.session_state["sector_map"] = get_sector_map()
+        _sector_map = st.session_state["sector_map"]
+
         result = {k: [] for k in selected}
 
         # 每個策略建立一個 placeholder，即時更新
@@ -733,23 +794,23 @@ if st.button("開始掃描", type="primary"):
                 df_res = pd.DataFrame(rows)
 
                 if "布林中線" in df_res.columns:
-                    target_cols = ["代號", "名稱", "現價", "布林中線", "布林上軌",
+                    target_cols = ["代號", "名稱", "族群", "現價", "布林中線", "布林上軌",
                                    "停損價(SL)", "停利價(TP)", "潛在獲利", "外資詳情"]
                 elif "爆量倍數" in df_res.columns:
-                    target_cols = ["代號", "名稱", "現價", "本週量(張)", "爆量倍數",
+                    target_cols = ["代號", "名稱", "族群", "現價", "本週量(張)", "爆量倍數",
                                    "停損價(SL)", "停利價(TP)", "潛在獲利", "外資詳情"]
                 elif "紅K實體" in df_res.columns:
-                    target_cols = ["代號", "名稱", "現價", "今日漲幅", "紅K實體",
+                    target_cols = ["代號", "名稱", "族群", "現價", "今日漲幅", "紅K實體",
                                    "昨日最高", "5MA",
                                    "停損價(SL)", "停利價(TP)", "潛在獲利", "外資詳情"]
                 elif "今日低點" in df_res.columns:
-                    target_cols = ["代號", "名稱", "現價", "今日低點", "昨日低點", "5MA",
+                    target_cols = ["代號", "名稱", "族群", "現價", "今日低點", "昨日低點", "5MA",
                                    "停損價(SL)", "停利價(TP)", "潛在獲利", "外資詳情"]
                 elif "5日乖離率" in df_res.columns:
-                    target_cols = ["代號", "名稱", "現價", "漲幅", "5日乖離率",
+                    target_cols = ["代號", "名稱", "族群", "現價", "漲幅", "5日乖離率",
                                    "停損價(SL)", "停利價(TP)", "潛在獲利", "外資詳情"]
                 else:
-                    target_cols = ["代號", "名稱", "現價",
+                    target_cols = ["代號", "名稱", "族群", "現價",
                                    "停損價(SL)", "停利價(TP)", "潛在獲利", "外資詳情"]
 
                 final_cols = [c for c in target_cols if c in df_res.columns]
@@ -798,6 +859,8 @@ if st.button("開始掃描", type="primary"):
                     try:
                         r = STRATEGIES[k](t, name, df, backtest_period)
                         if r:
+                            # 補充產業族群
+                            r["族群"] = get_sector(t, _sector_map)
                             r["策略"] = k
                             result[k].append(r)
                             updated.add(k)
