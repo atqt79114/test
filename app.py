@@ -13,7 +13,7 @@ warnings.filterwarnings("ignore")
 # 頁面設定
 # -------------------------------------------------
 st.set_page_config(page_title="台股潛伏策略篩選器", layout="wide")
-st.title("💤 台股潛伏/糾結策略篩選器 (進階版)")
+st.title("💤 台股篩選器 (良出版)")
 
 # === 核心：詳細策略邏輯與免責聲明 ===
 st.markdown("""
@@ -35,8 +35,11 @@ st.markdown("""
 3.  **🛁 爆量回檔 (雙黑K)**：
     * **條件**：前一根黑K且站 5MA、今日也是黑K且站 5MA，多頭排列（站上所有均線），乖離率 ≤ 6%。
 
-4.  **🕸️ 日線極度糾結 (潛伏版)**：
-    * **核心**：5/10/20/60 MA 四條均線黏合 (寬度 ≤ 4%)，股價乖離 ≤ 2%，振幅 ≤ 3%。
+4.  **🚀 回後買上漲**：
+    * **條件一**：今日收盤站上 5MA。
+    * **條件二**：紅K實體棒漲幅 > 2%（收 > 開，且漲幅超過 2%）。
+    * **條件三**：收盤過昨日最高價（突破前高確認方向）。
+    * **趨勢**：股價站上 5/10/20/60/120 全部均線，確保大趨勢向上。
 
 5.  **🔥 週線盤整突破**：
     * 週線爆量 2.8 倍以上，且站上 5/10/20 週均線。
@@ -239,18 +242,33 @@ def run_backtest(df, strategy_type, months):
                     curr_sl = ma5_curr_bt * 0.99   # 停損略低於5MA
                     curr_tp = c_curr * 1.12
 
-            # ── 策略3：極度糾結 ──
-            elif strategy_type == "consolidation":
-                ma_max = max(ma5.iloc[i], ma10.iloc[i], ma20.iloc[i], ma60.iloc[i])
-                ma_min = min(ma5.iloc[i], ma10.iloc[i], ma20.iloc[i], ma60.iloc[i])
-                if ma_min == 0:
+            # ── 策略3：回後買上漲 ──
+            elif strategy_type == "pullback_buy_breakout":
+                if i < 1:
                     continue
-                bw = (ma_max - ma_min) / ma_min
-                # 統一使用 0.04 閾值（與策略函式一致）
-                if bw <= 0.04 and c_curr > ma_max and volume.iloc[i] > volume.iloc[i - 1]:
-                    signal = True
-                    curr_sl = ma_min * 0.96
-                    curr_tp = c_curr * 1.15
+                o_curr_bt = float(open_p.iloc[i])
+                h_prev_bt = float(high.iloc[i - 1])
+
+                # 紅K且實體 > 2%
+                if c_curr <= o_curr_bt:
+                    continue
+                body_pct_bt = (c_curr - o_curr_bt) / o_curr_bt * 100
+                if body_pct_bt <= 2.0:
+                    continue
+
+                # 收盤過昨高
+                if c_curr <= h_prev_bt:
+                    continue
+
+                # 站上所有均線
+                if not (c_curr > ma5.iloc[i] and c_curr > ma10.iloc[i] and
+                        c_curr > ma20.iloc[i] and c_curr > ma60.iloc[i] and
+                        c_curr > ma120.iloc[i]):
+                    continue
+
+                signal = True
+                curr_sl = h_prev_bt * 0.99
+                curr_tp = c_curr * 1.15
 
             # ── 策略4：強勢回測5MA（底底高，已修正方向）──
             elif strategy_type == "strong_trend_ma5":
@@ -431,71 +449,94 @@ def strategy_washout_rebound(ticker, name, df, backtest_months):
         return None
 
 
-def strategy_consolidation_latent(ticker, name, df, backtest_months):
+def strategy_pullback_buy_breakout(ticker, name, df, backtest_months):
+    """
+    回後買上漲策略（圖示版）
+    條件：
+      1. 收盤站上 5MA
+      2. 紅K實體棒 > 2%（收 > 開，漲幅 > 2%）
+      3. 收盤過昨日最高價
+      4. 多頭排列：站上 MA5 / MA10 / MA20 / MA60 / MA120 全部均線
+    停損：昨日最高價（跌破即代表突破失敗）
+    """
     try:
-        if len(df) < 120:
+        if len(df) < 130:
             return None
 
         close  = df["Close"]
+        open_p = df["Open"]
+        high   = df["High"]
         volume = df["Volume"]
-        c_now = float(close.iloc[-1])
-        v_now = float(volume.iloc[-1])
 
-        if c_now < 10:
-            return None
+        c_now  = float(close.iloc[-1])
+        o_now  = float(open_p.iloc[-1])
+        h_prev = float(high.iloc[-2])   # 昨日最高價
+        v_now  = float(volume.iloc[-1])
+
+        # 基本量能過濾
         if v_now < 1_000_000:
+            return None
+        if c_now < 10:
             return None
         if ticker.startswith("28"):
             return None
 
-        ma5  = ta.trend.sma_indicator(close, 5)
-        ma10 = ta.trend.sma_indicator(close, 10)
-        ma20 = ta.trend.sma_indicator(close, 20)
-        ma60 = ta.trend.sma_indicator(close, 60)
+        ma5   = ta.trend.sma_indicator(close, 5)
+        ma10  = ta.trend.sma_indicator(close, 10)
+        ma20  = ta.trend.sma_indicator(close, 20)
+        ma60  = ta.trend.sma_indicator(close, 60)
+        ma120 = ta.trend.sma_indicator(close, 120)
 
-        ma5_now  = float(ma5.iloc[-1])
-        ma10_now = float(ma10.iloc[-1])
-        ma20_now = float(ma20.iloc[-1])
-        ma60_now = float(ma60.iloc[-1])
+        ma5_now   = float(ma5.iloc[-1])
+        ma10_now  = float(ma10.iloc[-1])
+        ma20_now  = float(ma20.iloc[-1])
+        ma60_now  = float(ma60.iloc[-1])
+        ma120_now = float(ma120.iloc[-1])
 
-        all_mas = [ma5_now, ma10_now, ma20_now, ma60_now]
-        ma_max = max(all_mas)
-        ma_min = min(all_mas)
-
-        if ma_min == 0:
+        # ── 條件1：收盤站上 5MA ──
+        if c_now <= ma5_now:
             return None
 
-        # 均線黏合度 ≤ 4%（與回測引擎統一）
-        bandwidth = (ma_max - ma_min) / ma_min
-        if bandwidth > 0.04:
+        # ── 條件2：紅K，且實體漲幅 > 2% ──
+        if c_now <= o_now:
+            return None
+        body_pct = (c_now - o_now) / o_now * 100
+        if body_pct <= 2.0:
             return None
 
+        # ── 條件3：收盤過昨日最高價 ──
+        if c_now <= h_prev:
+            return None
+
+        # ── 條件4：多頭排列（站上所有均線）──
+        if not (c_now > ma10_now and c_now > ma20_now and
+                c_now > ma60_now and c_now > ma120_now):
+            return None
+
+        # 計算整體漲幅（相對昨收）
         c_prev = float(close.iloc[-2])
-        if c_prev == 0:
-            return None
+        total_pct = (c_now - c_prev) / c_prev * 100
 
-        pct_change = abs((c_now - c_prev) / c_prev)
-        if pct_change > 0.03:
-            return None
+        bt_res = run_backtest(df, "pullback_buy_breakout", backtest_months)
 
-        bias_20 = abs((c_now - ma20_now) / ma20_now)
-        if bias_20 > 0.02:
-            return None
-
-        sl_price = ma_min * 0.96
+        # 停損：昨日最高價（突破昨高才是有效突破，若跌回即失敗）
+        sl_price = h_prev * 0.99
         rr = calculate_risk_reward(c_now, sl_price, df.index[-1])
         if rr is None:
             return None
 
-        bt_res = run_backtest(df, "consolidation", backtest_months)
-
         return {
-            "代號": ticker, "名稱": name, "現價": round(c_now, 2),
-            "糾結度": f"{round(bandwidth * 100, 2)}%",
-            "乖離率": f"{round(bias_20 * 100, 2)}%",
-            **rr, **(bt_res or {}),
-            "狀態": "均線黏合潛伏中 🕸️",
-            "外資詳情": get_chip_link(ticker)
+            "代號": ticker,
+            "名稱": name,
+            "現價": round(c_now, 2),
+            "今日漲幅": f"{round(total_pct, 2)}%",
+            "紅K實體": f"{round(body_pct, 2)}%",
+            "昨日最高": round(h_prev, 2),
+            "5MA": round(ma5_now, 2),
+            **rr,
+            **(bt_res or {}),
+            "外資詳情": get_chip_link(ticker),
+            "狀態": "回後買上漲 🚀"
         }
     except Exception:
         return None
@@ -620,11 +661,11 @@ def strategy_strong_trend_ma5(ticker, name, df, backtest_months):
 # 策略集合
 # -------------------------------------------------
 STRATEGIES = {
-    "⚡ 強勢回測 5MA (底底高)":       strategy_strong_trend_ma5,
-    "🌀 布林中線 (量縮黑K)":          strategy_bollinger_mid,
-    "🛁 爆量回檔 (雙黑K站5MA)":       strategy_washout_rebound,
-    "🕸️ 日線極度糾結 (潛伏中)":       strategy_consolidation_latent,
-    "🔥 週線盤整突破 (爆量2.8倍)":    strategy_weekly_breakout,
+    "⚡ 強勢回測 5MA (底底高)":        strategy_strong_trend_ma5,
+    "🌀 布林中線 (量縮黑K)":           strategy_bollinger_mid,
+    "🛁 爆量回檔 (雙黑K站5MA)":        strategy_washout_rebound,
+    "🚀 回後買上漲 (紅K過昨高)":       strategy_pullback_buy_breakout,
+    "🔥 週線盤整突破 (爆量2.8倍)":     strategy_weekly_breakout,
 }
 
 # -------------------------------------------------
@@ -697,8 +738,9 @@ if st.button("開始掃描", type="primary"):
                 elif "爆量倍數" in df_res.columns:
                     target_cols = ["代號", "名稱", "現價", "本週量(張)", "爆量倍數",
                                    "停損價(SL)", "停利價(TP)", "潛在獲利", "外資詳情"]
-                elif "糾結度" in df_res.columns:
-                    target_cols = ["代號", "名稱", "現價", "糾結度", "乖離率",
+                elif "紅K實體" in df_res.columns:
+                    target_cols = ["代號", "名稱", "現價", "今日漲幅", "紅K實體",
+                                   "昨日最高", "5MA",
                                    "停損價(SL)", "停利價(TP)", "潛在獲利", "外資詳情"]
                 elif "今日低點" in df_res.columns:
                     target_cols = ["代號", "名稱", "現價", "今日低點", "昨日低點", "5MA",
