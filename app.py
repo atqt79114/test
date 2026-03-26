@@ -286,44 +286,56 @@ def strategy_washout_rebound(ticker, name, df, backtest_months):
         if len(df) < 125: return None
         close = df["Close"]; open_p = df["Open"]; volume = df["Volume"]
         if float(volume.iloc[-1]) < 500_000: return None
-        
+
         ma5 = ta.trend.sma_indicator(close, 5)
         ma10 = ta.trend.sma_indicator(close, 10)
         ma20 = ta.trend.sma_indicator(close, 20)
         ma60 = ta.trend.sma_indicator(close, 60)
         ma120 = ta.trend.sma_indicator(close, 120)
-        
-        c_now = float(close.iloc[-1]); ma5_now = ma5.iloc[-1]
-        c_prev = float(close.iloc[-2]); o_prev = float(open_p.iloc[-2])
-        v_curr = float(volume.iloc[-1]); v_prev = float(volume.iloc[-2]); v_prev_2 = float(volume.iloc[-3])
-        
-        if c_prev >= o_prev: return None 
-        if v_prev <= v_prev_2: return None 
-        if c_prev < ma5.iloc[-2]: return None 
-        if c_now < ma5_now: return None 
-        if v_curr >= v_prev: return None 
-        if not (c_now > ma5_now and c_now > ma10.iloc[-1] and c_now > ma20.iloc[-1] and c_now > ma60.iloc[-1] and c_now > ma120.iloc[-1]): return None
-        
+
+        c_now  = float(close.iloc[-1]);  o_now  = float(open_p.iloc[-1])
+        c_prev = float(close.iloc[-2]);  o_prev = float(open_p.iloc[-2])
+        ma5_now  = float(ma5.iloc[-1])
+        ma5_prev = float(ma5.iloc[-2])
+
+        # ── 前一根：黑K ──
+        if c_prev >= o_prev: return None
+
+        # ── 前一根：站在 5MA 之上 ──
+        if c_prev <= ma5_prev: return None
+
+        # ── 今日：黑K ──
+        if c_now >= o_now: return None
+
+        # ── 今日：收盤仍站在 5MA 之上 ──
+        if c_now <= ma5_now: return None
+
+        # ── 多頭排列：站上所有均線 ──
+        if not (c_now > ma10.iloc[-1] and c_now > ma20.iloc[-1]
+                and c_now > ma60.iloc[-1] and c_now > ma120.iloc[-1]):
+            return None
+
+        # ── 乖離率不超過 6%（避免追高） ──
         bias_5 = ((c_now - ma5_now) / ma5_now) * 100
-        if bias_5 > 4: return None
-        
+        if bias_5 > 6: return None
+
         pct_change = (c_now - c_prev) / c_prev * 100
-        eps = "N/A" 
+        eps = "N/A"
 
         bt_res = run_backtest(df, "washout", backtest_months)
         rr = calculate_risk_reward(c_now, ma5_now, df.index[-1])
-        
+
         return {
-            "代號": ticker, 
-            "名稱": name, 
-            "現價": round(c_now, 2), 
+            "代號": ticker,
+            "名稱": name,
+            "現價": round(c_now, 2),
             "漲幅": f"{round(pct_change, 2)}%",
-            "5日乖離率": f"{round(bias_5, 2)}%", 
+            "5日乖離率": f"{round(bias_5, 2)}%",
             "EPS": eps,
-            **rr, 
-            **(bt_res or {}), 
-            "外資詳情": get_chip_link(ticker), 
-            "狀態": "強勢洗盤 🛁"
+            **rr,
+            **(bt_res or {}),
+            "外資詳情": get_chip_link(ticker),
+            "狀態": "強勢回檔黑K 🛁"
         }
     except: return None
 
