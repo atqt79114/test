@@ -80,41 +80,66 @@ def get_all_tw_tickers():
 
 
 # -------------------------------------------------
-# 產業族群：從證交所 & 櫃買抓取分類
+# 產業族群：從證交所 & 櫃買 Open API 抓取中文分類
 # -------------------------------------------------
 @st.cache_data(ttl=86400)
 def get_sector_map():
     """
-    回傳 {ticker: industry_name}
-    來源：TWSE/TPEx ISIN 公告頁面，包含產業別欄位
-    Fallback：yfinance info（僅補漏用）
+    回傳 {ticker: 中文產業別}
+    來源1：TWSE 上市公司基本資料 API  → 有 '產業別' 欄
+    來源2：TPEx 上櫃公司基本資料 API  → 有 '產業類別' 欄
+    兩者都失敗才 fallback yfinance（速度慢，備用）
     """
     headers = {"User-Agent": "Mozilla/5.0"}
     sector_map = {}
 
-    for mode, suffix in [("2", ".TW"), ("4", ".TWO")]:
-        try:
-            url = f"https://isin.twse.com.tw/isin/C_public.jsp?strMode={mode}"
-            r = requests.get(url, headers=headers, verify=False, timeout=10)
-            raw_df = pd.read_html(r.text)[0]
+    # ── 上市（TWSE）──
+    # 官方 JSON API，回傳所有上市公司，欄位含 '產業別'
+    try:
+        url = "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+        r = requests.get(url, headers=headers, verify=False, timeout=15)
+        data = r.json()
+        for item in data:
+            code = str(item.get("公司代號", "")).strip()
+            industry = str(item.get("產業別", "")).strip()
+            if code.isdigit() and len(code) == 4 and industry and industry != "nan":
+                sector_map[f"{code}.TW"] = industry
+    except Exception:
+        pass
 
-            # 第一列通常是欄位標題，後續是資料
-            for row in raw_df.itertuples(index=False):
-                try:
-                    cell = str(row[0]).split()
-                    if len(cell) >= 2 and cell[0].isdigit() and len(cell[0]) == 4:
-                        code = cell[0]
-                        # 掃描各欄找產業別（非空、非數字、非nan）
-                        industry = ""
-                        for col_val in row[1:]:
-                            val = str(col_val).strip()
-                            if val and val not in ("nan", "None", "") and not val.replace(" ", "").isdigit():
-                                industry = val
-                                break
-                        if industry:
-                            sector_map[f"{code}{suffix}"] = industry
-                except Exception:
-                    continue
+    # ── 上櫃（TPEx）──
+    # 櫃買官方 JSON API，欄位含 '產業類別'
+    try:
+        url = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_peratio_analysis"
+        r = requests.get(url, headers=headers, verify=False, timeout=15)
+        data = r.json()
+        for item in data:
+            code = str(item.get("SecuritiesCompanyCode", "")).strip()
+            industry = str(item.get("IndustryType", "")).strip()
+            if code.isdigit() and len(code) == 4 and industry and industry != "nan":
+                sector_map[f"{code}.TWO"] = industry
+    except Exception:
+        pass
+
+    # ── 備援：若兩者都沒抓到，從 ISIN 頁面解析（第4欄才是產業別）──
+    if not sector_map:
+        try:
+            for mode, suffix in [("2", ".TW"), ("4", ".TWO")]:
+                url = f"https://isin.twse.com.tw/isin/C_public.jsp?strMode={mode}"
+                r = requests.get(url, headers=headers, verify=False, timeout=10)
+                raw_df = pd.read_html(r.text)[0]
+                # ISIN 頁面欄位順序：有價證券代號及名稱 | 國際證券辨識號碼(ISIN) | 上市日 | 市場別 | 產業別 | CFICode | 備註
+                # 產業別在 index 4
+                for row in raw_df.itertuples(index=False):
+                    try:
+                        cell = str(row[0]).split()
+                        if len(cell) >= 2 and cell[0].isdigit() and len(cell[0]) == 4:
+                            code = cell[0]
+                            industry = str(row[4]).strip() if len(row) > 4 else ""
+                            if industry and industry not in ("nan", "None", "產業別"):
+                                sector_map[f"{code}{suffix}"] = industry
+                    except Exception:
+                        continue
         except Exception:
             pass
 
@@ -122,10 +147,11 @@ def get_sector_map():
 
 
 def get_sector(ticker, sector_map):
-    """查詢單一股票的產業族群，找不到時 fallback yfinance"""
+    """查詢單一股票的中文產業族群，找不到時 fallback yfinance"""
     result = sector_map.get(ticker, "")
     if result:
         return result
+    # Fallback：yfinance（只在 sector_map 完全查不到時才呼叫）
     try:
         info = yf.Ticker(ticker).info
         return info.get("industry") or info.get("sector") or "—"
