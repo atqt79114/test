@@ -82,61 +82,93 @@ def get_all_tw_tickers():
 # -------------------------------------------------
 # 產業族群：從證交所 & 櫃買 Open API 抓取中文分類
 # -------------------------------------------------
+# 證交所產業代碼 → 中文名稱對照表（內建，不依賴網路）
+TWSE_INDUSTRY_CODE = {
+    "01": "水泥工業",   "02": "食品工業",   "03": "塑膠工業",
+    "04": "紡織纖維",   "05": "電機機械",   "06": "電器電纜",
+    "07": "化學生技醫療","08": "玻璃陶瓷",   "09": "造紙工業",
+    "10": "鋼鐵工業",   "11": "橡膠工業",   "12": "汽車工業",
+    "13": "電子工業",   "14": "建材營造",   "15": "航運業",
+    "16": "觀光餐旅",   "17": "金融保險",   "18": "貿易百貨",
+    "19": "綜合",       "20": "其他",        "21": "化學工業",
+    "22": "生技醫療業", "23": "油電燃氣業", "24": "半導體業",
+    "25": "電腦及週邊設備業", "26": "光電業",
+    "27": "通信網路業", "28": "電子零組件業",
+    "29": "電子通路業", "30": "資訊服務業",
+    "31": "其他電子業", "32": "文化創意業",
+    "33": "農業科技業", "34": "電子商務",
+    "35": "綠能環保",   "36": "數位雲端",
+    "37": "運動休閒",   "38": "居家生活",
+    # 上櫃常見代碼
+    "W2": "上櫃電子",   "W3": "上櫃生技",
+}
+
 @st.cache_data(ttl=86400)
 def get_sector_map():
     """
     回傳 {ticker: 中文產業別}
-    來源1：TWSE 上市公司基本資料 API  → 有 '產業別' 欄
-    來源2：TPEx 上櫃公司基本資料 API  → 有 '產業類別' 欄
-    兩者都失敗才 fallback yfinance（速度慢，備用）
+    策略：
+      1. TWSE openapi → 取 '產業別' 欄，若是數字代碼則對照 TWSE_INDUSTRY_CODE 轉中文
+      2. TPEx openapi → 同上
+      3. ISIN 頁面備援（第4欄）
     """
     headers = {"User-Agent": "Mozilla/5.0"}
     sector_map = {}
 
-    # ── 上市（TWSE）──
-    # 官方 JSON API，回傳所有上市公司，欄位含 '產業別'
+    def resolve_industry(raw: str) -> str:
+        """將代碼或中文名稱統一轉成中文；若查不到則原樣回傳"""
+        raw = raw.strip()
+        if not raw or raw in ("nan", "None", ""):
+            return ""
+        # 純數字代碼 → 查對照表
+        if raw.isdigit():
+            return TWSE_INDUSTRY_CODE.get(raw.zfill(2), f"產業{raw}")
+        # 兩位字母+數字混合
+        return TWSE_INDUSTRY_CODE.get(raw, raw)
+
+    # ── 來源1：TWSE 上市 Open API ──
     try:
         url = "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
         r = requests.get(url, headers=headers, verify=False, timeout=15)
-        data = r.json()
-        for item in data:
+        for item in r.json():
             code = str(item.get("公司代號", "")).strip()
-            industry = str(item.get("產業別", "")).strip()
-            if code.isdigit() and len(code) == 4 and industry and industry != "nan":
-                sector_map[f"{code}.TW"] = industry
+            raw  = str(item.get("產業別", "")).strip()
+            if code.isdigit() and len(code) == 4:
+                industry = resolve_industry(raw)
+                if industry:
+                    sector_map[f"{code}.TW"] = industry
     except Exception:
         pass
 
-    # ── 上櫃（TPEx）──
-    # 櫃買官方 JSON API，欄位含 '產業類別'
+    # ── 來源2：TPEx 上櫃 Open API ──
     try:
         url = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_peratio_analysis"
         r = requests.get(url, headers=headers, verify=False, timeout=15)
-        data = r.json()
-        for item in data:
+        for item in r.json():
             code = str(item.get("SecuritiesCompanyCode", "")).strip()
-            industry = str(item.get("IndustryType", "")).strip()
-            if code.isdigit() and len(code) == 4 and industry and industry != "nan":
-                sector_map[f"{code}.TWO"] = industry
+            raw  = str(item.get("IndustryType", "")).strip()
+            if code.isdigit() and len(code) == 4:
+                industry = resolve_industry(raw)
+                if industry:
+                    sector_map[f"{code}.TWO"] = industry
     except Exception:
         pass
 
-    # ── 備援：若兩者都沒抓到，從 ISIN 頁面解析（第4欄才是產業別）──
+    # ── 來源3：ISIN 頁面備援（第4欄是產業別）──
     if not sector_map:
         try:
             for mode, suffix in [("2", ".TW"), ("4", ".TWO")]:
                 url = f"https://isin.twse.com.tw/isin/C_public.jsp?strMode={mode}"
                 r = requests.get(url, headers=headers, verify=False, timeout=10)
                 raw_df = pd.read_html(r.text)[0]
-                # ISIN 頁面欄位順序：有價證券代號及名稱 | 國際證券辨識號碼(ISIN) | 上市日 | 市場別 | 產業別 | CFICode | 備註
-                # 產業別在 index 4
                 for row in raw_df.itertuples(index=False):
                     try:
                         cell = str(row[0]).split()
                         if len(cell) >= 2 and cell[0].isdigit() and len(cell[0]) == 4:
                             code = cell[0]
-                            industry = str(row[4]).strip() if len(row) > 4 else ""
-                            if industry and industry not in ("nan", "None", "產業別"):
+                            raw = str(row[4]).strip() if len(row) > 4 else ""
+                            industry = resolve_industry(raw)
+                            if industry and industry not in ("產業別",):
                                 sector_map[f"{code}{suffix}"] = industry
                     except Exception:
                         continue
