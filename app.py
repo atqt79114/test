@@ -815,7 +815,7 @@ with tab_scan:
             cols_add = st.columns(min(len(rows), 5))
             for idx, row in enumerate(rows):
                 with cols_add[idx % 5]:
-                    btn_key = f"add_{strategy_name}_{idx}_{row.get(chr(20195)+chr(34399), idx)}"
+                    btn_key = f"add_{strategy_name}_{row['代號']}_{idx}"
                     if st.button(f"{row['代號']} {row['現價']}", key=btn_key):
                         append_to_portfolio(portfolio_ws, {
                             "買入日期": date.today().strftime("%Y-%m-%d"),
@@ -865,8 +865,6 @@ with tab_scan:
                                 updated.add(k)
                         except Exception:
                             continue
-                for k in updated:
-                    render_results(k, result[k], placeholders)
                 time.sleep(0.5)
 
             progress_bar.empty()
