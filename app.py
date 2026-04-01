@@ -84,7 +84,7 @@ if not st.session_state.get("connected"):
     st.markdown("### 請先登入以使用完整功能（含個人庫存）")
     auth_url = build_auth_url()
     st.markdown(
-        f'<a href="{auth_url}" target="_self">'
+        f'<a href="{auth_url}" target="_top">'  # <--- 將 _self 改為 _top
         f'<button style="background:#4285F4;color:white;border:none;'
         f'padding:12px 28px;border-radius:6px;font-size:16px;cursor:pointer;">'
         f'🔑 使用 Google 帳號登入</button></a>',
