@@ -26,10 +26,8 @@ authenticator = Authenticate(
     secret_credentials_path=None,
     cookie_name="tw_stock_auth",
     cookie_key="tw_stock_secret_key_2",
-    # 把原本的 client_id 改成 google_id
-    google_id=st.secrets["GOOGLE_CLIENT_ID"],
-    # 把原本的 client_secret 改成 google_secret
-    google_secret=st.secrets["GOOGLE_CLIENT_SECRET"],
+    GoogleID=st.secrets["GOOGLE_CLIENT_ID"],      # 改成大寫開頭，且中間無底線
+    GoogleSecret=st.secrets["GOOGLE_CLIENT_SECRET"] 
 )
 authenticator.check_authentification()
 
