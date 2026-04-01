@@ -756,7 +756,7 @@ with tab_portfolio:
 # =================================================
 with tab_scan:
 
-    def render_results(strategy_name, rows, placeholders):
+   def render_results(strategy_name, rows, placeholders):
     if not rows:
         return
 
@@ -911,7 +911,7 @@ with tab_scan:
                 if st.button("❌ 取消", key=f"cancel_add_{s['代號']}"):
                     del st.session_state["selected_stock"]
                     st.rerun()
-
+                    
     if st.button("開始掃描", type="primary"):
         if not tickers:
             st.error("沒有股票代碼！")
