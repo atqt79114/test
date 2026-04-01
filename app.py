@@ -97,7 +97,7 @@ if not st.session_state.get("connected"):
         f'">🔑 使用 Google 帳號登入</a>',
         unsafe_allow_html=True,
     )
-
+    st.stop()
 # 已登入
 user_email = st.session_state["user_info"].get("email", "unknown")
 user_name  = st.session_state["user_info"].get("name", "使用者")
