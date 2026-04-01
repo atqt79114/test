@@ -756,10 +756,11 @@ with tab_portfolio:
 # =================================================
 with tab_scan:
 
-    def render_results(strategy_name, rows):
-        if not rows:
-            return
+def render_results(strategy_name, rows, placeholders):
+    if not rows:
+        return
 
+    with placeholders[strategy_name].container():
         st.subheader(f"📊 {strategy_name}　（{len(rows)} 筆）")
         df_res = pd.DataFrame(rows)
 
@@ -794,40 +795,122 @@ with tab_scan:
         st.dataframe(
             df_res[final_cols + other_cols],
             use_container_width=True,
-            column_config={"外資詳情": st.column_config.LinkColumn("外資詳情", display_text="查看數據")}
+            column_config={
+                "外資詳情": st.column_config.LinkColumn("外資詳情", display_text="查看數據")
+            }
         )
 
-        st.markdown("**➕ 將篩選結果加入庫存：**")
-        df_port_now = load_portfolio(portfolio_ws)
-        existing_codes = set(df_port_now["代號"].astype(str).tolist()) if not df_port_now.empty else set()
-
+        st.markdown("### ➕ 將篩選結果加入庫存")
         cols_add = st.columns(min(len(rows), 5))
+
         for idx, row in enumerate(rows):
             with cols_add[idx % 5]:
-                btn_key = f"add_{strategy_name}_{row['代號']}_{idx}"
-                already_exists = row["代號"] in existing_codes
+                btn_key = f"pick_{strategy_name}_{idx}_{row.get('代號', idx)}"
+                if st.button(f"{row['代號']} {row['現價']}", key=btn_key):
+                    st.session_state["selected_stock"] = {
+                        "買入日期": date.today().strftime("%Y-%m-%d"),
+                        "代號": row.get("代號", ""),
+                        "名稱": row.get("名稱", ""),
+                        "族群": row.get("族群", ""),
+                        "策略": strategy_name,
+                        "買入價": float(row.get("現價", 0) or 0),
+                        "張數": 1,
+                        "停損價": float(row.get("停損價(SL)", 0) or 0),
+                        "停利價": float(row.get("停利價(TP)", 0) or 0),
+                        "備註": "",
+                    }
 
-                if already_exists:
-                    st.button(f"✅ {row['代號']} 已在庫存", key=f"exists_{btn_key}", disabled=True)
-                else:
-                    if st.button(f"{row['代號']} {row['現價']}", key=btn_key):
-                        append_to_portfolio(portfolio_ws, {
-                            "買入日期": date.today().strftime("%Y-%m-%d"),
-                            "代號": row.get("代號", ""),
-                            "名稱": row.get("名稱", ""),
-                            "族群": row.get("族群", ""),
-                            "策略": strategy_name,
-                            "買入價": row.get("現價", ""),
-                            "成本總額(元)": "",
-                            "張數": "",
-                            "停損價": row.get("停損價(SL)", ""),
-                            "停利價": row.get("停利價(TP)", ""),
-                            "備註": "",
-                        })
-                        st.session_state["go_portfolio"] = True
-                        st.success(f"✅ {row['代號']} 已加入庫存！")
-                        st.rerun()
+        # 顯示加入庫存編輯表單
+        if "selected_stock" in st.session_state:
+            s = st.session_state["selected_stock"]
 
+            st.markdown("---")
+            st.markdown(f"## 📝 加入庫存：{s['代號']} {s['名稱']}")
+
+            c1, c2, c3 = st.columns(3)
+
+            with c1:
+                buy_date = st.date_input(
+                    "買入日期",
+                    value=datetime.strptime(s["買入日期"], "%Y-%m-%d").date(),
+                    key=f"scan_buy_date_{s['代號']}"
+                )
+                buy_price = st.number_input(
+                    "買入價",
+                    min_value=0.0,
+                    step=0.1,
+                    value=float(s["買入價"]),
+                    key=f"scan_buy_price_{s['代號']}"
+                )
+                lots = st.number_input(
+                    "張數",
+                    min_value=1,
+                    step=1,
+                    value=int(s["張數"]),
+                    key=f"scan_lots_{s['代號']}"
+                )
+
+            with c2:
+                stop_loss = st.number_input(
+                    "停損價",
+                    min_value=0.0,
+                    step=0.1,
+                    value=float(s["停損價"]),
+                    key=f"scan_sl_{s['代號']}"
+                )
+                take_profit = st.number_input(
+                    "停利價",
+                    min_value=0.0,
+                    step=0.1,
+                    value=float(s["停利價"]),
+                    key=f"scan_tp_{s['代號']}"
+                )
+                sector = st.text_input(
+                    "族群",
+                    value=s["族群"],
+                    key=f"scan_sector_{s['代號']}"
+                )
+
+            with c3:
+                note = st.text_input(
+                    "備註",
+                    value=s["備註"],
+                    key=f"scan_note_{s['代號']}"
+                )
+                strategy_text = st.text_input(
+                    "策略",
+                    value=s["策略"],
+                    key=f"scan_strategy_{s['代號']}"
+                )
+
+                total_cost = round(buy_price * lots * 1000, 0)
+                st.metric("成本總額(元)", f"{int(total_cost):,}")
+
+            cbtn1, cbtn2 = st.columns(2)
+
+            with cbtn1:
+                if st.button("✅ 確認加入庫存", key=f"confirm_add_{s['代號']}", type="primary"):
+                    append_to_portfolio(portfolio_ws, {
+                        "買入日期": str(buy_date),
+                        "代號": s["代號"],
+                        "名稱": s["名稱"],
+                        "族群": sector,
+                        "策略": strategy_text,
+                        "買入價": buy_price,
+                        "成本總額(元)": total_cost,
+                        "張數": lots,
+                        "停損價": stop_loss,
+                        "停利價": take_profit,
+                        "備註": note,
+                    })
+                    st.success(f"✅ {s['代號']} 已加入庫存！")
+                    del st.session_state["selected_stock"]
+                    st.rerun()
+
+            with cbtn2:
+                if st.button("❌ 取消", key=f"cancel_add_{s['代號']}"):
+                    del st.session_state["selected_stock"]
+                    st.rerun()
     if st.button("開始掃描", type="primary"):
         if not tickers:
             st.error("沒有股票代碼！")
