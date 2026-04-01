@@ -25,12 +25,11 @@ st.set_page_config(page_title="台股潛伏策略篩選器", layout="wide")
 authenticator = Authenticate(
     secret_credentials_path=None,
     cookie_name="tw_stock_auth",
-    cookie_key="tw_stock_secret_key_2024",
-    redirect_uri=None,  # Streamlit Cloud 自動處理
-    client_id=st.secrets["GOOGLE_CLIENT_ID"],
-    client_secret=st.secrets["GOOGLE_CLIENT_SECRET"],
+    cookie_key="tw_stock_secret_key_2",
+    # 這裡請注意！試著把 client_id 改成 GoogleID，client_secret 改成 GoogleSecret
+    GoogleID=st.secrets["GOOGLE_CLIENT_ID"],
+    GoogleSecret=st.secrets["GOOGLE_CLIENT_SECRET"],
 )
-
 authenticator.check_authentification()
 
 # 未登入 → 顯示登入按鈕
