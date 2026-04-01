@@ -84,20 +84,14 @@ if not st.session_state.get("connected"):
     st.markdown("### 請先登入以使用完整功能（含個人庫存）")
     auth_url = build_auth_url()
     st.markdown(
-        f'<a href="{auth_url}" target="_top" style="'
-        f'display: inline-block; '
-        f'background-color: #4285F4; '
-        f'color: white; '
-        f'padding: 12px 28px; '
-        f'border-radius: 6px; '
-        f'font-size: 16px; '
-        f'text-decoration: none; '
-        f'font-weight: bold; '
-        f'text-align: center;'
-        f'">🔑 使用 Google 帳號登入</a>',
+        f'<a href="{auth_url}" target="_self">'
+        f'<button style="background:#4285F4;color:white;border:none;'
+        f'padding:12px 28px;border-radius:6px;font-size:16px;cursor:pointer;">'
+        f'🔑 使用 Google 帳號登入</button></a>',
         unsafe_allow_html=True,
     )
     st.stop()
+
 # 已登入
 user_email = st.session_state["user_info"].get("email", "unknown")
 user_name  = st.session_state["user_info"].get("name", "使用者")
