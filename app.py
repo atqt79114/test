@@ -6,13 +6,12 @@ import requests
 import warnings
 import time
 import json
-import tempfile
-import os
 from datetime import date, datetime
+from urllib.parse import urlencode
 
 import gspread
 from google.oauth2.service_account import Credentials
-from streamlit_google_auth import Authenticate
+import httpx
 
 warnings.filterwarnings("ignore")
 
@@ -22,40 +21,75 @@ warnings.filterwarnings("ignore")
 st.set_page_config(page_title="台股潛伏策略篩選器", layout="wide")
 
 # -------------------------------------------------
-# Google OAuth 登入
+# Google OAuth 登入（純手工實作，不依賴第三方套件）
 # -------------------------------------------------
-_REDIRECT_URI = "https://2sv2r89tp93nexxafg9gdm.streamlit.app/"
+_CLIENT_ID     = st.secrets["GOOGLE_CLIENT_ID"]
+_CLIENT_SECRET = st.secrets["GOOGLE_CLIENT_SECRET"]
+_REDIRECT_URI  = "https://2sv2r89tp93nexxafg9gdm.streamlit.app/"
+_AUTH_URL      = "https://accounts.google.com/o/oauth2/v2/auth"
+_TOKEN_URL     = "https://oauth2.googleapis.com/token"
+_USERINFO_URL  = "https://www.googleapis.com/oauth2/v3/userinfo"
+_SCOPE         = "openid email profile"
 
-# streamlit-google-auth 需要 JSON 檔案路徑，
-# 把 secrets 裡的憑證寫成暫存檔再傳入
-_oauth_info = {
-    "web": {
-        "client_id":     st.secrets["GOOGLE_CLIENT_ID"],
-        "client_secret": st.secrets["GOOGLE_CLIENT_SECRET"],
-        "redirect_uris": [_REDIRECT_URI],
-        "auth_uri":      "https://accounts.google.com/o/oauth2/auth",
-        "token_uri":     "https://oauth2.googleapis.com/token",
+
+def build_auth_url() -> str:
+    params = {
+        "client_id":     _CLIENT_ID,
+        "redirect_uri":  _REDIRECT_URI,
+        "response_type": "code",
+        "scope":         _SCOPE,
+        "access_type":   "offline",
+        "prompt":        "select_account",
     }
-}
-_tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
-json.dump(_oauth_info, _tmp)
-_tmp.flush()
-_tmp_path = _tmp.name
+    return f"{_AUTH_URL}?{urlencode(params)}"
 
-authenticator = Authenticate(
-    secret_credentials_path=_tmp_path,
-    cookie_name="tw_stock_auth",
-    cookie_key="tw_stock_secret_key_2024",
-    redirect_uri=_REDIRECT_URI,
-)
 
-authenticator.check_authentification()
+def exchange_code_for_token(code: str) -> dict:
+    resp = httpx.post(_TOKEN_URL, data={
+        "code":          code,
+        "client_id":     _CLIENT_ID,
+        "client_secret": _CLIENT_SECRET,
+        "redirect_uri":  _REDIRECT_URI,
+        "grant_type":    "authorization_code",
+    })
+    return resp.json()
 
-# 未登入 → 顯示登入按鈕
+
+def get_user_info(access_token: str) -> dict:
+    resp = httpx.get(
+        _USERINFO_URL,
+        headers={"Authorization": f"Bearer {access_token}"}
+    )
+    return resp.json()
+
+
+# ── 處理 Google 回傳的 code ──
+params = st.query_params
+if "code" in params and "user_info" not in st.session_state:
+    code = params["code"]
+    token_data = exchange_code_for_token(code)
+    if "access_token" in token_data:
+        user_info = get_user_info(token_data["access_token"])
+        st.session_state["user_info"] = user_info
+        st.session_state["connected"] = True
+        st.query_params.clear()
+        st.rerun()
+    else:
+        st.error(f"Google 登入失敗：{token_data.get('error_description', token_data)}")
+        st.stop()
+
+# ── 未登入 → 顯示登入按鈕 ──
 if not st.session_state.get("connected"):
     st.title("💤 台股潛伏/糾結策略篩選器")
     st.markdown("### 請先登入以使用完整功能（含個人庫存）")
-    authenticator.login()
+    auth_url = build_auth_url()
+    st.markdown(
+        f'<a href="{auth_url}" target="_self">'
+        f'<button style="background:#4285F4;color:white;border:none;'
+        f'padding:12px 28px;border-radius:6px;font-size:16px;cursor:pointer;">'
+        f'🔑 使用 Google 帳號登入</button></a>',
+        unsafe_allow_html=True,
+    )
     st.stop()
 
 # 已登入
@@ -78,12 +112,7 @@ def get_gspread_client():
 
 
 def get_or_create_user_sheet(gc, spreadsheet_id: str, user_email: str):
-    """
-    每個 user_email 對應一個分頁（worksheet）。
-    分頁不存在時自動建立並加上標題列。
-    """
     sh = gc.open_by_key(spreadsheet_id)
-    # 用 email 去掉特殊字元當分頁名（Sheets 分頁名長度限制 100）
     sheet_title = user_email[:50].replace("@", "_at_").replace(".", "_")
     try:
         ws = sh.worksheet(sheet_title)
@@ -98,7 +127,6 @@ def get_or_create_user_sheet(gc, spreadsheet_id: str, user_email: str):
 
 
 def load_portfolio(ws) -> pd.DataFrame:
-    """從 Sheets 讀取庫存，回傳 DataFrame。"""
     records = ws.get_all_records()
     if not records:
         return pd.DataFrame(columns=[
@@ -110,32 +138,20 @@ def load_portfolio(ws) -> pd.DataFrame:
 
 
 def append_to_portfolio(ws, row: dict):
-    """新增一筆庫存到 Sheets。"""
     ws.append_row([
-        row.get("買入日期", ""),
-        row.get("代號", ""),
-        row.get("名稱", ""),
-        row.get("族群", ""),
-        row.get("策略", ""),
-        row.get("買入價", ""),
-        row.get("成本總額(元)", ""),
-        row.get("張數", ""),
-        row.get("停損價", ""),
-        row.get("停利價", ""),
-        row.get("備註", ""),
+        row.get("買入日期", ""), row.get("代號", ""), row.get("名稱", ""),
+        row.get("族群", ""), row.get("策略", ""), row.get("買入價", ""),
+        row.get("成本總額(元)", ""), row.get("張數", ""),
+        row.get("停損價", ""), row.get("停利價", ""), row.get("備註", ""),
     ])
 
 
 def delete_portfolio_row(ws, row_index: int):
-    """
-    刪除指定列（row_index 是 DataFrame 的 index，
-    +2 是因為 Sheets 從 1 開始且第 1 列是標題）
-    """
     ws.delete_rows(row_index + 2)
 
 
 # -------------------------------------------------
-# 初始化 Sheets 連線（快取在 session）
+# 初始化 Sheets 連線
 # -------------------------------------------------
 if "portfolio_ws" not in st.session_state:
     try:
@@ -158,10 +174,9 @@ with col_title:
 with col_user:
     st.markdown(f"**👤 {user_name}**")
     if st.button("登出"):
-        authenticator.logout()
+        st.session_state.clear()
         st.rerun()
 
-# === 免責聲明 ===
 st.markdown("""
 ---
 ### ⚠️ 免責聲明：市場沒有 100% 穩贏的策略
@@ -318,13 +333,11 @@ def download_batch_data(tickers_batch):
             group_by='ticker', progress=False, threads=True, auto_adjust=False
         )
         result_dict = {}
-
         if len(tickers_batch) == 1:
             t = tickers_batch[0]
-            if not data.empty and len(data) > 0:
+            if not data.empty:
                 result_dict[t] = data
             return result_dict
-
         for t in tickers_batch:
             try:
                 if t in data.columns.levels[0]:
@@ -336,7 +349,6 @@ def download_batch_data(tickers_batch):
                         result_dict[t] = df
             except Exception:
                 continue
-
         return result_dict
     except Exception:
         return {}
@@ -347,18 +359,15 @@ def calculate_risk_reward(c_now, sl_price, date_now, custom_target=None):
     risk = c_now - sl_price
     if risk <= 0:
         return None
-
     if custom_target:
         target_price = round(custom_target, 2)
         potential_profit = (target_price - c_now) / c_now
     else:
         target_price = round(c_now + (risk * 2.0), 2)
         potential_profit = (risk * 2.0) / c_now
-
     today_str = date.today().strftime('%Y-%m-%d')
     signal_date = date_now.strftime('%Y-%m-%d')
     is_today = (signal_date == today_str)
-
     return {
         "訊號日期": f"🆕 {signal_date}" if is_today else signal_date,
         "停損價(SL)": sl_price,
@@ -374,39 +383,32 @@ def run_backtest(df, strategy_type, months):
     try:
         is_weekly = (strategy_type == "weekly_breakout")
         lookback = months * 4 if is_weekly else months * 22
-
         if len(df) < lookback + 20:
             return None
-
         trades = []
         in_position = False
         entry_price = 0
         target_price = 0
         stop_loss_price = 0
-
         start_idx = len(df) - lookback
         if start_idx < 125:
             start_idx = 125
-
         close  = df["Close"]
         open_p = df["Open"]
         high   = df["High"]
         low    = df["Low"]
         volume = df["Volume"]
-
         ma5   = ta.trend.sma_indicator(close, 5)
         ma10  = ta.trend.sma_indicator(close, 10)
         ma20  = ta.trend.sma_indicator(close, 20)
         ma60  = ta.trend.sma_indicator(close, 60)
         ma120 = ta.trend.sma_indicator(close, 120)
         bb20  = ta.volatility.BollingerBands(close=close, window=20, window_dev=2)
-
         for i in range(start_idx, len(df) - 1):
             c_curr = float(close.iloc[i])
             h_curr = float(high.iloc[i])
             l_curr = float(low.iloc[i])
             o_curr = float(open_p.iloc[i])
-
             if in_position:
                 if h_curr >= target_price:
                     trades.append((target_price - entry_price) / entry_price)
@@ -419,14 +421,11 @@ def run_backtest(df, strategy_type, months):
                 if strategy_type == "bollinger_mid":
                     target_price = bb20.bollinger_hband().iloc[i]
                 continue
-
-            signal   = False
-            curr_sl  = 0
-            curr_tp  = 0
-
+            signal  = False
+            curr_sl = 0
+            curr_tp = 0
             if not is_weekly and volume.iloc[i] < 500_000:
                 continue
-
             if strategy_type == "bollinger_mid":
                 if c_curr > ma120.iloc[i]:
                     mid = bb20.bollinger_mavg().iloc[i]
@@ -435,10 +434,8 @@ def run_backtest(df, strategy_type, months):
                             signal  = True
                             curr_sl = mid * 0.97
                             curr_tp = bb20.bollinger_hband().iloc[i]
-
             elif strategy_type == "washout":
-                if i < 1:
-                    continue
+                if i < 1: continue
                 c_prev_bt   = float(close.iloc[i - 1])
                 o_prev_bt   = float(open_p.iloc[i - 1])
                 ma5_curr_bt = float(ma5.iloc[i])
@@ -451,29 +448,20 @@ def run_backtest(df, strategy_type, months):
                     signal  = True
                     curr_sl = ma5_curr_bt * 0.99
                     curr_tp = c_curr * 1.12
-
             elif strategy_type == "pullback_buy_breakout":
-                if i < 1:
-                    continue
-                h_prev_bt   = float(high.iloc[i - 1])
-                if c_curr <= o_curr:
-                    continue
+                if i < 1: continue
+                h_prev_bt = float(high.iloc[i - 1])
+                if c_curr <= o_curr: continue
                 body_pct_bt = (c_curr - o_curr) / o_curr * 100
-                if body_pct_bt <= 2.0:
-                    continue
-                if c_curr <= h_prev_bt:
-                    continue
+                if body_pct_bt <= 2.0 or c_curr <= h_prev_bt: continue
                 if not (c_curr > ma5.iloc[i] and c_curr > ma10.iloc[i] and
                         c_curr > ma20.iloc[i] and c_curr > ma60.iloc[i] and
-                        c_curr > ma120.iloc[i]):
-                    continue
+                        c_curr > ma120.iloc[i]): continue
                 signal  = True
                 curr_sl = h_prev_bt * 0.99
                 curr_tp = c_curr * 1.15
-
             elif strategy_type == "strong_trend_ma5":
-                if c_curr < 20 or c_curr < ma120.iloc[i] or i < 1:
-                    continue
+                if c_curr < 20 or c_curr < ma120.iloc[i] or i < 1: continue
                 l_prev_bt    = float(low.iloc[i - 1])
                 ma5_curr_bt  = float(ma5.iloc[i])
                 ma10_curr_bt = float(ma10.iloc[i])
@@ -484,16 +472,13 @@ def run_backtest(df, strategy_type, months):
                     signal  = True
                     curr_sl = l_curr
                     curr_tp = c_curr * 1.1
-
             if signal:
                 in_position     = True
                 entry_price     = c_curr
                 stop_loss_price = curr_sl
                 target_price    = curr_tp
-
         if not trades:
             return {"回測勝率": "無訊號", "平均獲利": "0%", "總交易": 0}
-
         win_count = sum(1 for p in trades if p > 0)
         return {
             "回測勝率": f"{round((win_count / len(trades)) * 100, 1)}%",
@@ -505,7 +490,7 @@ def run_backtest(df, strategy_type, months):
 
 
 # -------------------------------------------------
-# 策略函式（與原版相同，略縮）
+# 策略函式
 # -------------------------------------------------
 def strategy_bollinger_mid(ticker, name, df, backtest_months):
     try:
@@ -564,8 +549,8 @@ def strategy_pullback_buy_breakout(ticker, name, df, backtest_months):
     try:
         if len(df) < 130: return None
         close, open_p, high, volume = df["Close"], df["Open"], df["High"], df["Volume"]
-        c_now, o_now, h_prev, v_now = (float(close.iloc[-1]), float(open_p.iloc[-1]),
-                                        float(high.iloc[-2]),  float(volume.iloc[-1]))
+        c_now, o_now = float(close.iloc[-1]), float(open_p.iloc[-1])
+        h_prev, v_now = float(high.iloc[-2]), float(volume.iloc[-1])
         if v_now < 1_000_000 or c_now < 10 or ticker.startswith("28"): return None
         ma5   = ta.trend.sma_indicator(close, 5)
         ma10  = ta.trend.sma_indicator(close, 10)
@@ -617,8 +602,8 @@ def strategy_strong_trend_ma5(ticker, name, df, backtest_months):
     try:
         if len(df) < 130: return None
         close, low, volume = df["Close"], df["Low"], df["Volume"]
-        c_now, l_now, l_prev, v_now = (float(close.iloc[-1]), float(low.iloc[-1]),
-                                        float(low.iloc[-2]),   float(volume.iloc[-1]))
+        c_now, l_now = float(close.iloc[-1]), float(low.iloc[-1])
+        l_prev, v_now = float(low.iloc[-2]), float(volume.iloc[-1])
         if v_now < 1_000_000 or c_now <= 20: return None
         ma5   = ta.trend.sma_indicator(close, 5)
         ma10  = ta.trend.sma_indicator(close, 10)
@@ -651,7 +636,7 @@ STRATEGIES = {
 }
 
 # -------------------------------------------------
-# Sidebar：股票來源 & 策略
+# Sidebar
 # -------------------------------------------------
 st.sidebar.header("股票來源")
 source = st.sidebar.radio("選擇", ["手動", "全市場"])
@@ -687,18 +672,17 @@ backtest_period = st.sidebar.selectbox(
     format_func=lambda x: f"過去 {x} 個月"
 )
 
-# =================================================================
-# 頁籤：掃描 / 我的庫存
-# =================================================================
+# -------------------------------------------------
+# 頁籤
+# -------------------------------------------------
 tab_scan, tab_portfolio = st.tabs(["🔍 策略掃描", "📦 我的庫存"])
 
 # -----------------------------------------------------------------
-# 📦 我的庫存 頁籤
+# 📦 我的庫存
 # -----------------------------------------------------------------
 with tab_portfolio:
     st.subheader(f"📦 {user_name} 的庫存清單")
 
-    # ── 手動新增庫存 ──
     with st.expander("➕ 手動新增持股", expanded=False):
         full_map_p = st.session_state.get("stock_map", {})
         if not full_map_p:
@@ -714,10 +698,10 @@ with tab_portfolio:
             p_buy_price = st.number_input("買入價", min_value=0.0, step=0.1, key="p_buy_price")
             p_lots      = st.number_input("張數", min_value=0, step=1, key="p_lots")
         with col3:
-            p_sl    = st.number_input("停損價", min_value=0.0, step=0.1, key="p_sl")
-            p_tp    = st.number_input("停利價", min_value=0.0, step=0.1, key="p_tp")
-            p_note  = st.text_input("備註", key="p_note")
-            p_date  = st.date_input("買入日期", value=date.today(), key="p_date")
+            p_sl   = st.number_input("停損價", min_value=0.0, step=0.1, key="p_sl")
+            p_tp   = st.number_input("停利價", min_value=0.0, step=0.1, key="p_tp")
+            p_note = st.text_input("備註", key="p_note")
+            p_date = st.date_input("買入日期", value=date.today(), key="p_date")
 
         if st.button("✅ 新增到庫存", type="primary"):
             if not p_ticker:
@@ -727,34 +711,23 @@ with tab_portfolio:
             else:
                 cost = round(p_buy_price * p_lots * 1000, 0)
                 append_to_portfolio(portfolio_ws, {
-                    "買入日期":    str(p_date),
-                    "代號":       p_ticker,
-                    "名稱":       p_name,
-                    "族群":       p_sector,
-                    "策略":       p_strategy,
-                    "買入價":     p_buy_price,
-                    "成本總額(元)": cost,
-                    "張數":       p_lots,
-                    "停損價":     p_sl,
-                    "停利價":     p_tp,
-                    "備註":       p_note,
+                    "買入日期": str(p_date), "代號": p_ticker, "名稱": p_name,
+                    "族群": p_sector, "策略": p_strategy, "買入價": p_buy_price,
+                    "成本總額(元)": cost, "張數": p_lots,
+                    "停損價": p_sl, "停利價": p_tp, "備註": p_note,
                 })
                 st.success(f"✅ {p_ticker} 已新增到庫存！")
                 st.rerun()
 
     st.markdown("---")
-
-    # ── 讀取並顯示庫存 ──
     df_port = load_portfolio(portfolio_ws)
 
     if df_port.empty:
         st.info("庫存是空的，可以從掃描結果一鍵加入，或手動新增。")
     else:
-        # 即時損益計算
         def get_current_price(ticker):
             try:
-                t = yf.Ticker(ticker)
-                hist = t.history(period="1d")
+                hist = yf.Ticker(ticker).history(period="1d")
                 if not hist.empty:
                     return round(float(hist["Close"].iloc[-1]), 2)
             except Exception:
@@ -769,21 +742,17 @@ with tab_portfolio:
             st.session_state["live_prices"] = prices
 
         live_prices = st.session_state.get("live_prices", {})
-
-        # 加上即時欄位
         df_display = df_port.copy()
-        df_display["現價"]    = df_display["代號"].map(lambda x: live_prices.get(x, "—"))
+        df_display["現價"] = df_display["代號"].map(lambda x: live_prices.get(x, "—"))
         df_display["損益(%)"] = df_display.apply(
             lambda row: (
                 f"{round((float(row['現價']) - float(row['買入價'])) / float(row['買入價']) * 100, 2)}%"
-                if row["現價"] != "—" and str(row["買入價"]).replace('.','').isdigit()
+                if row["現價"] != "—" and str(row["買入價"]).replace('.', '').isdigit()
                 else "—"
             ), axis=1
         )
-
         st.dataframe(df_display, use_container_width=True)
 
-        # ── 刪除列 ──
         st.markdown("##### 🗑️ 刪除持股")
         del_idx = st.number_input(
             "輸入要刪除的列號（從 0 開始）",
@@ -796,7 +765,7 @@ with tab_portfolio:
             st.rerun()
 
 # -----------------------------------------------------------------
-# 🔍 策略掃描 頁籤
+# 🔍 策略掃描
 # -----------------------------------------------------------------
 with tab_scan:
 
@@ -841,25 +810,18 @@ with tab_scan:
                 column_config={"外資詳情": st.column_config.LinkColumn("外資詳情", display_text="查看數據")}
             )
 
-            # ── 一鍵加入庫存 ──
             st.markdown("**➕ 將篩選結果加入庫存：**")
             cols_add = st.columns(min(len(rows), 5))
             for idx, row in enumerate(rows):
                 with cols_add[idx % 5]:
-                    btn_label = f"{row['代號']}\n{row['現價']}"
-                    if st.button(btn_label, key=f"add_{strategy_name}_{idx}"):
+                    if st.button(f"{row['代號']}\n{row['現價']}", key=f"add_{strategy_name}_{idx}"):
                         append_to_portfolio(portfolio_ws, {
-                            "買入日期":    date.today().strftime("%Y-%m-%d"),
-                            "代號":       row.get("代號", ""),
-                            "名稱":       row.get("名稱", ""),
-                            "族群":       row.get("族群", ""),
-                            "策略":       strategy_name,
-                            "買入價":     row.get("現價", ""),
-                            "成本總額(元)": "",
-                            "張數":       "",
-                            "停損價":     row.get("停損價(SL)", ""),
-                            "停利價":     row.get("停利價(TP)", ""),
-                            "備註":       "",
+                            "買入日期": date.today().strftime("%Y-%m-%d"),
+                            "代號": row.get("代號", ""), "名稱": row.get("名稱", ""),
+                            "族群": row.get("族群", ""), "策略": strategy_name,
+                            "買入價": row.get("現價", ""), "成本總額(元)": "",
+                            "張數": "", "停損價": row.get("停損價(SL)", ""),
+                            "停利價": row.get("停利價(TP)", ""), "備註": "",
                         })
                         st.success(f"✅ {row['代號']} 已加入庫存！")
 
@@ -881,13 +843,13 @@ with tab_scan:
             for i in range(0, len(tickers), batch_size):
                 progress_bar.progress(min((i + batch_size) / len(tickers), 1.0))
                 batch_tickers = tickers[i: i + batch_size]
-                status_text.text(f"掃描中... {i+1} ~ {min(i+batch_size, len(tickers))} / {len(tickers)} 檔")
-
+                status_text.text(
+                    f"掃描中... {i+1} ~ {min(i+batch_size, len(tickers))} / {len(tickers)} 檔"
+                )
                 data_dict = download_batch_data(batch_tickers)
                 if not data_dict:
                     time.sleep(1)
                     continue
-
                 updated = set()
                 for t, df_data in data_dict.items():
                     name = stock_map.get(t, t)
@@ -901,10 +863,8 @@ with tab_scan:
                                 updated.add(k)
                         except Exception:
                             continue
-
                 for k in updated:
                     render_results(k, result[k], placeholders)
-
                 time.sleep(0.5)
 
             progress_bar.empty()
