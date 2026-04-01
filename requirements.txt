@@ -49,6 +49,6 @@ watchdog==6.0.0
 websockets==15.0.1
 yfinance==0.2.66
 lxml
-streamlit-google-auth
-gspread
-google-auth
+streamlit-google-auth==1.1.8
+gspread==6.2.1
+google-auth==2.40.3
