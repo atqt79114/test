@@ -11,6 +11,13 @@ from datetime import date, datetime
 import gspread
 from google.oauth2.service_account import Credentials
 from streamlit_google_auth import Authenticate
+import streamlit as st
+
+# 測試系統有沒有成功讀取到設定檔的「標題」，不印出內容以策安全
+if "GOOGLE_CLIENT_SECRET" in st.secrets:
+    st.success("太棒了！系統有抓到金鑰，是 Authenticate 套件的問題。")
+else:
+    st.error("糟糕，系統還是找不到金鑰，Secrets 的格式可能還有錯。")
 
 warnings.filterwarnings("ignore")
 
@@ -22,7 +29,7 @@ st.set_page_config(page_title="台股潛伏策略篩選器", layout="wide")
 # -------------------------------------------------
 # Google OAuth 登入
 # -------------------------------------------------
-authenticator = Authenticate(
+#authenticator = Authenticate(
     secret_credentials_path=None,
     cookie_name="tw_stock_auth",
     cookie_key="tw_stock_secret_key_2024",
