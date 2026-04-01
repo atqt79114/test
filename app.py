@@ -6,6 +6,8 @@ import requests
 import warnings
 import time
 import json
+import tempfile
+import os
 from datetime import date, datetime
 
 import gspread
@@ -22,13 +24,29 @@ st.set_page_config(page_title="台股潛伏策略篩選器", layout="wide")
 # -------------------------------------------------
 # Google OAuth 登入
 # -------------------------------------------------
+_REDIRECT_URI = "https://2sv2r89tp93nexxafg9gdm.streamlit.app/"
+
+# streamlit-google-auth 需要 JSON 檔案路徑，
+# 把 secrets 裡的憑證寫成暫存檔再傳入
+_oauth_info = {
+    "web": {
+        "client_id":     st.secrets["GOOGLE_CLIENT_ID"],
+        "client_secret": st.secrets["GOOGLE_CLIENT_SECRET"],
+        "redirect_uris": [_REDIRECT_URI],
+        "auth_uri":      "https://accounts.google.com/o/oauth2/auth",
+        "token_uri":     "https://oauth2.googleapis.com/token",
+    }
+}
+_tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+json.dump(_oauth_info, _tmp)
+_tmp.flush()
+_tmp_path = _tmp.name
+
 authenticator = Authenticate(
-    secret_credentials_path=None,
+    secret_credentials_path=_tmp_path,
     cookie_name="tw_stock_auth",
     cookie_key="tw_stock_secret_key_2024",
-    redirect_uri=None,  # Streamlit Cloud 自動處理
-    client_id=st.secrets["GOOGLE_CLIENT_ID"],
-    client_secret=st.secrets["GOOGLE_CLIENT_SECRET"],
+    redirect_uri=_REDIRECT_URI,
 )
 
 authenticator.check_authentification()
