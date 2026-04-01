@@ -83,7 +83,7 @@ if not st.session_state.get("connected"):
     st.title("💤 台股潛伏/糾結策略篩選器")
     st.markdown("### 請先登入以使用完整功能（含個人庫存）")
     auth_url = build_auth_url()
-st.markdown(
+    st.markdown(
         f'<a href="{auth_url}" target="_top" style="'
         f'display: inline-block; '
         f'background-color: #4285F4; '
@@ -97,7 +97,6 @@ st.markdown(
         f'">🔑 使用 Google 帳號登入</a>',
         unsafe_allow_html=True,
     )
-    st.stop()
 
 # 已登入
 user_email = st.session_state["user_info"].get("email", "unknown")
