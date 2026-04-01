@@ -84,12 +84,13 @@ if not st.session_state.get("connected"):
     st.markdown("### 請先登入以使用完整功能（含個人庫存）")
     auth_url = build_auth_url()
     st.markdown(
-        f'<a href="{auth_url}" target="_self">'
+        f'<a href="{auth_url}" target="_blank">'
         f'<button style="background:#4285F4;color:white;border:none;'
         f'padding:12px 28px;border-radius:6px;font-size:16px;cursor:pointer;">'
-        f'🔑 使用 Google 帳號登入</button></a>',
+        f'🔑 使用 Google 帳號登入（新視窗）</button></a>',
         unsafe_allow_html=True,
     )
+    st.info('💡 登入完成後請回到此頁重新整理（F5）即可進入系統。')
     st.stop()
 
 # 已登入
@@ -814,7 +815,8 @@ with tab_scan:
             cols_add = st.columns(min(len(rows), 5))
             for idx, row in enumerate(rows):
                 with cols_add[idx % 5]:
-                    if st.button(f"{row['代號']}\n{row['現價']}", key=f"add_{strategy_name}_{idx}"):
+                    btn_key = f"add_{strategy_name}_{idx}_{row.get(chr(20195)+chr(34399), idx)}"
+                    if st.button(f"{row['代號']} {row['現價']}", key=btn_key):
                         append_to_portfolio(portfolio_ws, {
                             "買入日期": date.today().strftime("%Y-%m-%d"),
                             "代號": row.get("代號", ""), "名稱": row.get("名稱", ""),
