@@ -144,8 +144,8 @@ portfolio_ws = st.session_state["portfolio_ws"]
 # -------------------------------------------------
 def send_alert_email(to_email, subject, html_body):
     try:
-        sender   = st.secrets["kyo79114@gmail.com"]
-        password = st.secrets["bpjt cgob hlyh fqvg"]
+        sender   = st.secrets["GMAIL_SENDER"]
+        password = st.secrets["GMAIL_APP_PASSWORD"]
         msg = MIMEMultipart("alternative")
         msg["Subject"] = subject
         msg["From"]    = sender
