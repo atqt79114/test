@@ -170,13 +170,11 @@ def send_alert_email(to_email, subject, html_body):
     try:
         sender   = st.secrets["GMAIL_SENDER"]
         password = st.secrets["GMAIL_APP_PASSWORD"]
-
         msg = MIMEMultipart("alternative")
         msg["Subject"] = subject
         msg["From"]    = sender
         msg["To"]      = to_email
         msg.attach(MIMEText(html_body, "html", "utf-8"))
-
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(sender, password)
             server.sendmail(sender, to_email, msg.as_string())
@@ -199,10 +197,8 @@ def get_latest_price(ticker):
 def check_and_alert(df_port, to_email, force=False):
     if df_port.empty:
         return []
-
     if force:
         st.session_state.pop("alerted_tickers", None)
-
     if "alerted_tickers" not in st.session_state:
         st.session_state["alerted_tickers"] = set()
 
@@ -212,34 +208,23 @@ def check_and_alert(df_port, to_email, force=False):
         name   = str(row.get("名稱", ""))
         sl_raw = str(row.get("停損價", "")).replace(",", "").strip()
         tp_raw = str(row.get("停利價", "")).replace(",", "").strip()
-
         if not sl_raw and not tp_raw:
             continue
         if ticker in st.session_state["alerted_tickers"]:
             continue
-
         price = get_latest_price(ticker)
         if price is None:
             continue
-
         sl = float(sl_raw) if sl_raw else None
         tp = float(tp_raw) if tp_raw else None
-
         hit_type = None
         if sl and price <= sl:
             hit_type = "🔴 停損觸發"
         elif tp and price >= tp:
             hit_type = "🟢 停利觸發"
-
         if hit_type:
-            triggered.append({
-                "代號": ticker,
-                "名稱": name,
-                "現價": price,
-                "停損價": sl,
-                "停利價": tp,
-                "類型": hit_type
-            })
+            triggered.append({"代號": ticker, "名稱": name, "現價": price,
+                               "停損價": sl, "停利價": tp, "類型": hit_type})
             st.session_state["alerted_tickers"].add(ticker)
 
     if triggered:
@@ -253,10 +238,8 @@ def check_and_alert(df_port, to_email, force=False):
             f"</tr>"
             for t in triggered
         ])
-
         html_body = (
-            "<html><body>"
-            "<h2>📊 台股庫存價格警示</h2>"
+            "<html><body><h2>📊 台股庫存價格警示</h2>"
             "<p>以下持股已觸發停損或停利條件，請留意：</p>"
             "<table style='border-collapse:collapse;width:100%;font-family:sans-serif'>"
             "<tr style='background:#f0f0f0'>"
@@ -265,19 +248,11 @@ def check_and_alert(df_port, to_email, force=False):
             "<th style='padding:8px;border:1px solid #ddd'>現價</th>"
             "<th style='padding:8px;border:1px solid #ddd'>停損價</th>"
             "<th style='padding:8px;border:1px solid #ddd'>停利價</th>"
-            "</tr>"
-            f"{rows_html}"
-            "</table>"
+            f"</tr>{rows_html}</table>"
             "<br><p style='color:gray;font-size:12px'>此信由台股潛伏策略篩選器自動發送，請勿回覆。</p>"
             "</body></html>"
         )
-
-        send_alert_email(
-            to_email,
-            f"台股庫存警示：{len(triggered)} 筆觸發（{date.today()}）",
-            html_body
-        )
-
+        send_alert_email(to_email, f"台股庫存警示：{len(triggered)} 筆觸發（{date.today()}）", html_body)
     return triggered
 
 
@@ -297,6 +272,13 @@ st.markdown("""
 ---
 ### ⚠️ 免責聲明：市場沒有 100% 穩贏的策略
 **所有篩選結果僅供技術分析參考，不代表買賣建議。請務必搭配基本面與籌碼面判斷。**
+
+---
+#### 🧠 停利邏輯說明
+- 🌀 **布林中線**：停利 = 布林上軌（目標明確，保留原邏輯）
+- 🛁 🚀 ⚡ **其他策略**：**1:2 風報比，但停利上限 +12%**
+  - 例：現價 100，停損 97（風險 3元）→ 停利 = min(106, 112) = 106
+  - 避免停損距離過小導致停利目標離譜地遠
 ---
 """)
 
@@ -392,84 +374,89 @@ def get_sector(ticker, sector_map):
 def clean_ohlcv_df(df):
     if df is None or df.empty:
         return pd.DataFrame()
-
     df = df.copy()
-
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(-1)
-
     needed = ["Open", "High", "Low", "Close", "Volume"]
     df = df[[c for c in needed if c in df.columns]].copy()
-
     for col in needed:
         if col not in df.columns:
             return pd.DataFrame()
         df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    df = df.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
-    return df
+    return df.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
 
 
 def download_batch_data(tickers_batch):
     if not tickers_batch:
         return {}
-
     try:
         data = yf.download(
-            tickers_batch,
-            period="2y",
-            interval="1d",
-            group_by="ticker",
-            progress=False,
-            threads=True,
-            auto_adjust=False
+            tickers_batch, period="2y", interval="1d",
+            group_by="ticker", progress=False, threads=True, auto_adjust=False
         )
-
         result_dict = {}
-
         if len(tickers_batch) == 1:
             df = clean_ohlcv_df(data)
             if not df.empty:
                 result_dict[tickers_batch[0]] = df
             return result_dict
-
         for t in tickers_batch:
             try:
                 if t in data.columns.levels[0]:
-                    df = data[t].copy()
-                    df = clean_ohlcv_df(df)
+                    df = clean_ohlcv_df(data[t].copy())
                     if not df.empty:
                         result_dict[t] = df
             except Exception:
                 continue
-
         return result_dict
     except Exception:
         return {}
 
 
-def calculate_risk_reward(c_now, sl_price, date_now, custom_target=None):
+# -------------------------------------------------
+# ★ 核心：停利計算（1:2 風報比，上限 +12%）
+# -------------------------------------------------
+def calculate_risk_reward(c_now, sl_price, date_now, custom_target=None, rr_cap=0.12):
+    """
+    custom_target : 直接指定停利（布林中線用布林上軌）
+    rr_cap        : 停利上限，預設 12%
+    一般策略邏輯  : 停利 = min( 現價 + 風險×2, 現價×1.12 )
+    """
     sl_price = round(sl_price, 2)
     risk = c_now - sl_price
     if risk <= 0:
         return None
 
-    if custom_target:
-        target_price = round(custom_target, 2)
-        potential_profit = (target_price - c_now) / c_now
-    else:
-        target_price = round(c_now + risk * 2.0, 2)
-        potential_profit = (risk * 2.0) / c_now
-
-    today_str = date.today().strftime('%Y-%m-%d')
+    today_str   = date.today().strftime('%Y-%m-%d')
     signal_date = date_now.strftime('%Y-%m-%d')
 
+    if custom_target:
+        target_price     = round(custom_target, 2)
+        potential_profit = (target_price - c_now) / c_now
+    else:
+        tp_by_rr     = c_now + risk * 2.0          # 1:2 風報比
+        tp_capped    = c_now * (1 + rr_cap)         # 上限 +12%
+        target_price = round(min(tp_by_rr, tp_capped), 2)
+        potential_profit = (target_price - c_now) / c_now
+
     return {
-        "訊號日期": f"🆕 {signal_date}" if signal_date == today_str else signal_date,
+        "訊號日期":   f"🆕 {signal_date}" if signal_date == today_str else signal_date,
         "停損價(SL)": sl_price,
         "停利價(TP)": target_price,
-        "潛在獲利": f"{round(potential_profit * 100, 1)}%"
+        "潛在獲利":   f"{round(potential_profit * 100, 1)}%"
     }
+
+
+# -------------------------------------------------
+# 回測輔助：與 calculate_risk_reward 相同的 TP 邏輯
+# -------------------------------------------------
+def _bt_tp(c, sl, custom_tp=None, rr_cap=0.12):
+    if custom_tp is not None:
+        return custom_tp
+    risk = c - sl
+    if risk <= 0:
+        return c * 1.05
+    return min(c + risk * 2.0, c * (1 + rr_cap))
 
 
 # -------------------------------------------------
@@ -477,20 +464,16 @@ def calculate_risk_reward(c_now, sl_price, date_now, custom_target=None):
 # -------------------------------------------------
 def run_backtest(df, strategy_type, months):
     try:
-        lookback = months * 22
+        lookback  = months * 22
         if len(df) < lookback + 20:
             return None
 
         trades, in_position = [], False
         entry_price = target_price = stop_loss_price = 0
+        start_idx   = max(len(df) - lookback, 125)
 
-        start_idx = max(len(df) - lookback, 125)
-
-        close = df["Close"]
-        open_p = df["Open"]
-        high = df["High"]
-        low = df["Low"]
-        volume = df["Volume"]
+        close  = df["Close"];  open_p = df["Open"]
+        high   = df["High"];   low    = df["Low"];  volume = df["Volume"]
 
         ma5   = ta.trend.sma_indicator(close, 5)
         ma10  = ta.trend.sma_indicator(close, 10)
@@ -505,98 +488,76 @@ def run_backtest(df, strategy_type, months):
             l_curr = float(low.iloc[i])
             o_curr = float(open_p.iloc[i])
 
+            # ── 持倉管理 ──
             if in_position:
                 if h_curr >= target_price:
                     trades.append((target_price - entry_price) / entry_price)
-                    in_position = False
-                    continue
+                    in_position = False; continue
                 if c_curr < stop_loss_price:
                     trades.append((c_curr - entry_price) / entry_price)
-                    in_position = False
-                    continue
+                    in_position = False; continue
                 if strategy_type == "bollinger_mid":
-                    curr_upper = bb20.bollinger_hband().iloc[i]
-                    if pd.notna(curr_upper):
-                        target_price = float(curr_upper)
+                    u = bb20.bollinger_hband().iloc[i]
+                    if pd.notna(u):
+                        target_price = float(u)
                 continue
-
-            signal = False
-            curr_sl = curr_tp = 0
 
             if volume.iloc[i] < 500_000:
                 continue
 
+            signal = False; curr_sl = curr_tp = 0
+
+            # 🌀 布林中線 → 停利用上軌（不 cap）
             if strategy_type == "bollinger_mid":
-                mid = bb20.bollinger_mavg().iloc[i]
-                upper = bb20.bollinger_hband().iloc[i]
-                prev_mid = bb20.bollinger_mavg().iloc[i - 1]
+                mid  = bb20.bollinger_mavg().iloc[i]
+                upper= bb20.bollinger_hband().iloc[i]
+                pmid = bb20.bollinger_mavg().iloc[i - 1]
+                if pd.isna(mid) or pd.isna(upper) or pd.isna(pmid): continue
+                if c_curr > ma120.iloc[i] and abs(c_curr - mid) / mid <= 0.015 and mid > pmid:
+                    if c_curr < o_curr and volume.iloc[i] < volume.iloc[i - 1]:
+                        signal = True; curr_sl = mid * 0.97; curr_tp = float(upper)
 
-                if pd.isna(mid) or pd.isna(upper) or pd.isna(prev_mid):
-                    continue
-
-                if c_curr > ma120.iloc[i]:
-                    if abs(c_curr - mid) / mid <= 0.015 and mid > prev_mid:
-                        if c_curr < o_curr and volume.iloc[i] < volume.iloc[i - 1]:
-                            signal = True
-                            curr_sl = mid * 0.97
-                            curr_tp = upper
-
+            # 🛁 爆量回檔 → 1:2 上限 12%
             elif strategy_type == "washout" and i >= 1:
-                c_p = float(close.iloc[i - 1])
-                o_p = float(open_p.iloc[i - 1])
-                m5c = float(ma5.iloc[i])
-                m5p = float(ma5.iloc[i - 1])
-                bias = (c_curr - m5c) / m5c * 100
+                cp  = float(close.iloc[i-1]); op = float(open_p.iloc[i-1])
+                m5c = float(ma5.iloc[i]);     m5p= float(ma5.iloc[i-1])
+                bias= (c_curr - m5c) / m5c * 100
+                if (cp < op and cp > m5p and c_curr < o_curr and c_curr > m5c and
+                        c_curr > ma20.iloc[i] and c_curr > ma60.iloc[i] and
+                        c_curr > ma120.iloc[i] and bias <= 6):
+                    signal = True; curr_sl = m5c * 0.99
+                    curr_tp = _bt_tp(c_curr, curr_sl)
 
-                if (
-                    c_p < o_p and c_p > m5p and
-                    c_curr < o_curr and c_curr > m5c and
-                    c_curr > ma20.iloc[i] and c_curr > ma60.iloc[i] and c_curr > ma120.iloc[i] and
-                    bias <= 6
-                ):
-                    signal = True
-                    curr_sl = m5c * 0.99
-                    curr_tp = c_curr * 1.12
-
+            # 🚀 回後買上漲 → 1:2 上限 12%
             elif strategy_type == "pullback_buy_breakout" and i >= 1:
-                h_p = float(high.iloc[i - 1])
+                hp = float(high.iloc[i-1])
+                if (c_curr > o_curr and (c_curr - o_curr) / o_curr * 100 > 2.0 and
+                        c_curr > hp and c_curr > ma5.iloc[i] and c_curr > ma10.iloc[i] and
+                        c_curr > ma20.iloc[i] and c_curr > ma60.iloc[i] and c_curr > ma120.iloc[i]):
+                    signal = True; curr_sl = hp * 0.99
+                    curr_tp = _bt_tp(c_curr, curr_sl)
 
-                if (
-                    c_curr > o_curr and
-                    (c_curr - o_curr) / o_curr * 100 > 2.0 and
-                    c_curr > h_p and
-                    c_curr > ma5.iloc[i] and c_curr > ma10.iloc[i] and
-                    c_curr > ma20.iloc[i] and c_curr > ma60.iloc[i] and c_curr > ma120.iloc[i]
-                ):
-                    signal = True
-                    curr_sl = h_p * 0.99
-                    curr_tp = c_curr * 1.15
-
+            # ⚡ 強勢回測 5/10MA → 1:2 上限 12%
             elif strategy_type == "strong_trend_ma5" and i >= 1:
                 if c_curr >= 20 and c_curr > ma120.iloc[i]:
-                    l_p = float(low.iloc[i - 1])
-                    m5 = float(ma5.iloc[i])
-                    m10 = float(ma10.iloc[i])
-
-                    if l_curr < l_p and (l_curr < m5 or l_curr < m10) and (c_curr > m5 * 1.001 or c_curr > m10 * 1.001):
-                        signal = True
-                        curr_sl = l_curr
-                        curr_tp = c_curr * 1.1
+                    lp = float(low.iloc[i-1])
+                    m5 = float(ma5.iloc[i]); m10 = float(ma10.iloc[i])
+                    if (l_curr < lp and (l_curr < m5 or l_curr < m10) and
+                            (c_curr > m5 * 1.001 or c_curr > m10 * 1.001)):
+                        signal = True; curr_sl = l_curr
+                        curr_tp = _bt_tp(c_curr, curr_sl)
 
             if signal:
-                in_position = True
-                entry_price = c_curr
-                stop_loss_price = curr_sl
-                target_price = curr_tp
+                in_position = True; entry_price = c_curr
+                stop_loss_price = curr_sl; target_price = curr_tp
 
         if not trades:
             return {"回測勝率": "無訊號", "平均獲利": "0%", "總交易": 0}
-
         wc = sum(1 for p in trades if p > 0)
         return {
             "回測勝率": f"{round(wc / len(trades) * 100, 1)}%",
             "平均獲利": f"{round(sum(trades) / len(trades) * 100, 2)}%",
-            "總交易": len(trades)
+            "總交易":   len(trades)
         }
     except Exception:
         return None
@@ -605,253 +566,142 @@ def run_backtest(df, strategy_type, months):
 # -------------------------------------------------
 # 策略函式
 # -------------------------------------------------
+
 def strategy_bollinger_mid(ticker, name, df, backtest_months):
+    """停利 = 布林上軌"""
     try:
-        if len(df) < 125:
-            return None
-
-        close = df["Close"]
-        open_p = df["Open"]
-        volume = df["Volume"]
-
-        c_now = float(close.iloc[-1])
-        o_now = float(open_p.iloc[-1])
-        v_now = float(volume.iloc[-1])
-        v_prev = float(volume.iloc[-2])
-
+        if len(df) < 125: return None
+        close = df["Close"]; open_p = df["Open"]; volume = df["Volume"]
+        c_now = float(close.iloc[-1]); o_now = float(open_p.iloc[-1])
+        v_now = float(volume.iloc[-1]); v_prev = float(volume.iloc[-2])
         ma120_now = ta.trend.sma_indicator(close, 120).iloc[-1]
-        if pd.isna(ma120_now) or v_now < 500_000 or c_now < float(ma120_now):
-            return None
-
+        if pd.isna(ma120_now) or v_now < 500_000 or c_now < float(ma120_now): return None
         bb = ta.volatility.BollingerBands(close=close, window=20, window_dev=2)
-        mid_now = bb.bollinger_mavg().iloc[-1]
-        upper_now = bb.bollinger_hband().iloc[-1]
-        mid_prev = bb.bollinger_mavg().iloc[-2]
-
-        if pd.isna(mid_now) or pd.isna(upper_now) or pd.isna(mid_prev):
-            return None
-
-        mid_now = float(mid_now)
-        upper_now = float(upper_now)
-        mid_prev = float(mid_prev)
-
-        if abs(c_now - mid_now) / mid_now > 0.015:
-            return None
-        if mid_now < mid_prev:
-            return None
-        if c_now >= o_now:
-            return None
-        if v_now >= v_prev:
-            return None
-
+        mid_now = float(bb.bollinger_mavg().iloc[-1])
+        upper_now = float(bb.bollinger_hband().iloc[-1])
+        mid_prev  = float(bb.bollinger_mavg().iloc[-2])
+        if pd.isna(mid_now) or pd.isna(upper_now) or pd.isna(mid_prev): return None
+        if abs(c_now - mid_now) / mid_now > 0.015: return None
+        if mid_now < mid_prev or c_now >= o_now or v_now >= v_prev: return None
         bt_res = run_backtest(df, "bollinger_mid", backtest_months)
         rr = calculate_risk_reward(c_now, mid_now * 0.97, df.index[-1], custom_target=upper_now)
-        if rr is None:
-            return None
-
+        if rr is None: return None
         return {
-            "代號": ticker,
-            "名稱": name,
-            "現價": round(c_now, 2),
-            "布林中線": round(mid_now, 2),
-            "布林上軌": round(upper_now, 2),
-            **rr,
-            **(bt_res or {}),
-            "外資詳情": get_chip_link(ticker),
-            "狀態": "中線黑K量縮 🌀"
+            "代號": ticker, "名稱": name, "現價": round(c_now, 2),
+            "布林中線": round(mid_now, 2), "布林上軌": round(upper_now, 2),
+            **rr, **(bt_res or {}),
+            "外資詳情": get_chip_link(ticker), "狀態": "中線黑K量縮 🌀"
         }
-    except Exception:
-        return None
+    except Exception: return None
 
 
 def strategy_washout_rebound(ticker, name, df, backtest_months):
+    """停利 = 1:2 風報比，上限 +12%"""
     try:
-        if len(df) < 125:
-            return None
-
-        close = df["Close"]
-        open_p = df["Open"]
-        volume = df["Volume"]
-
-        if float(volume.iloc[-1]) < 500_000:
-            return None
-
-        ma5 = ta.trend.sma_indicator(close, 5)
-        ma10 = ta.trend.sma_indicator(close, 10)
-        ma20 = ta.trend.sma_indicator(close, 20)
-        ma60 = ta.trend.sma_indicator(close, 60)
+        if len(df) < 125: return None
+        close = df["Close"]; open_p = df["Open"]; volume = df["Volume"]
+        if float(volume.iloc[-1]) < 500_000: return None
+        ma5   = ta.trend.sma_indicator(close, 5)
+        ma10  = ta.trend.sma_indicator(close, 10)
+        ma20  = ta.trend.sma_indicator(close, 20)
+        ma60  = ta.trend.sma_indicator(close, 60)
         ma120 = ta.trend.sma_indicator(close, 120)
-
-        c_now = float(close.iloc[-1])
-        o_now = float(open_p.iloc[-1])
-        c_prev = float(close.iloc[-2])
-        o_prev = float(open_p.iloc[-2])
-        ma5_now = float(ma5.iloc[-1])
-        ma5_prev = float(ma5.iloc[-2])
-
-        if c_prev >= o_prev or c_prev <= ma5_prev or c_now >= o_now or c_now <= ma5_now:
-            return None
-
-        if not (
-            c_now > float(ma10.iloc[-1]) and
-            c_now > float(ma20.iloc[-1]) and
-            c_now > float(ma60.iloc[-1]) and
-            c_now > float(ma120.iloc[-1])
-        ):
-            return None
-
+        c_now = float(close.iloc[-1]); o_now = float(open_p.iloc[-1])
+        c_prev= float(close.iloc[-2]); o_prev= float(open_p.iloc[-2])
+        ma5_now = float(ma5.iloc[-1]); ma5_prev = float(ma5.iloc[-2])
+        if c_prev >= o_prev or c_prev <= ma5_prev or c_now >= o_now or c_now <= ma5_now: return None
+        if not (c_now > float(ma10.iloc[-1]) and c_now > float(ma20.iloc[-1]) and
+                c_now > float(ma60.iloc[-1]) and c_now > float(ma120.iloc[-1])): return None
         bias_5 = (c_now - ma5_now) / ma5_now * 100
-        if bias_5 > 6:
-            return None
-
+        if bias_5 > 6: return None
         pct_change = (c_now - c_prev) / c_prev * 100
         bt_res = run_backtest(df, "washout", backtest_months)
-        rr = calculate_risk_reward(c_now, ma5_now * 0.99, df.index[-1])
-        if rr is None:
-            return None
-
+        rr = calculate_risk_reward(c_now, ma5_now * 0.99, df.index[-1])   # 1:2，上限 12%
+        if rr is None: return None
         return {
-            "代號": ticker,
-            "名稱": name,
-            "現價": round(c_now, 2),
+            "代號": ticker, "名稱": name, "現價": round(c_now, 2),
             "漲幅": f"{round(pct_change, 2)}%",
             "5日乖離率": f"{round(bias_5, 2)}%",
-            **rr,
-            **(bt_res or {}),
-            "外資詳情": get_chip_link(ticker),
-            "狀態": "強勢回檔黑K 🛁"
+            **rr, **(bt_res or {}),
+            "外資詳情": get_chip_link(ticker), "狀態": "強勢回檔黑K 🛁"
         }
-    except Exception:
-        return None
+    except Exception: return None
 
 
 def strategy_pullback_buy_breakout(ticker, name, df, backtest_months):
+    """停利 = 1:2 風報比，上限 +12%"""
     try:
-        if len(df) < 130:
-            return None
-
-        close = df["Close"]
-        open_p = df["Open"]
-        high = df["High"]
-        volume = df["Volume"]
-
-        c_now = float(close.iloc[-1])
-        o_now = float(open_p.iloc[-1])
-        h_prev = float(high.iloc[-2])
-        v_now = float(volume.iloc[-1])
-
-        if v_now < 1_000_000 or c_now < 10 or ticker.startswith("28"):
-            return None
-
-        ma5 = ta.trend.sma_indicator(close, 5)
-        ma10 = ta.trend.sma_indicator(close, 10)
-        ma20 = ta.trend.sma_indicator(close, 20)
-        ma60 = ta.trend.sma_indicator(close, 60)
+        if len(df) < 130: return None
+        close = df["Close"]; open_p = df["Open"]; high = df["High"]; volume = df["Volume"]
+        c_now = float(close.iloc[-1]); o_now = float(open_p.iloc[-1])
+        h_prev= float(high.iloc[-2]);  v_now = float(volume.iloc[-1])
+        if v_now < 1_000_000 or c_now < 10 or ticker.startswith("28"): return None
+        ma5   = ta.trend.sma_indicator(close, 5)
+        ma10  = ta.trend.sma_indicator(close, 10)
+        ma20  = ta.trend.sma_indicator(close, 20)
+        ma60  = ta.trend.sma_indicator(close, 60)
         ma120 = ta.trend.sma_indicator(close, 120)
-
-        if c_now <= float(ma5.iloc[-1]) or c_now <= o_now:
-            return None
-
+        if c_now <= float(ma5.iloc[-1]) or c_now <= o_now: return None
         body_pct = (c_now - o_now) / o_now * 100
-        if body_pct <= 2.0 or c_now <= h_prev:
-            return None
-
-        if not (
-            c_now > float(ma10.iloc[-1]) and
-            c_now > float(ma20.iloc[-1]) and
-            c_now > float(ma60.iloc[-1]) and
-            c_now > float(ma120.iloc[-1])
-        ):
-            return None
-
+        if body_pct <= 2.0 or c_now <= h_prev: return None
+        if not (c_now > float(ma10.iloc[-1]) and c_now > float(ma20.iloc[-1]) and
+                c_now > float(ma60.iloc[-1]) and c_now > float(ma120.iloc[-1])): return None
         total_pct = (c_now - float(close.iloc[-2])) / float(close.iloc[-2]) * 100
         bt_res = run_backtest(df, "pullback_buy_breakout", backtest_months)
-        rr = calculate_risk_reward(c_now, h_prev * 0.99, df.index[-1])
-        if rr is None:
-            return None
-
+        rr = calculate_risk_reward(c_now, h_prev * 0.99, df.index[-1])    # 1:2，上限 12%
+        if rr is None: return None
         return {
-            "代號": ticker,
-            "名稱": name,
-            "現價": round(c_now, 2),
+            "代號": ticker, "名稱": name, "現價": round(c_now, 2),
             "今日漲幅": f"{round(total_pct, 2)}%",
             "紅K實體": f"{round(body_pct, 2)}%",
             "昨日最高": round(h_prev, 2),
             "5MA": round(float(ma5.iloc[-1]), 2),
-            **rr,
-            **(bt_res or {}),
-            "外資詳情": get_chip_link(ticker),
-            "狀態": "回後買上漲 🚀"
+            **rr, **(bt_res or {}),
+            "外資詳情": get_chip_link(ticker), "狀態": "回後買上漲 🚀"
         }
-    except Exception:
-        return None
+    except Exception: return None
 
 
 def strategy_strong_trend_ma5(ticker, name, df, backtest_months):
+    """停利 = 1:2 風報比，上限 +12%"""
     try:
-        if len(df) < 130:
-            return None
-
-        close = df["Close"]
-        low = df["Low"]
-        volume = df["Volume"]
-
-        c_now = float(close.iloc[-1])
-        l_now = float(low.iloc[-1])
-        l_prev = float(low.iloc[-2])
-        v_now = float(volume.iloc[-1])
-
-        if v_now < 1_000_000 or c_now <= 20:
-            return None
-
-        ma5 = ta.trend.sma_indicator(close, 5)
-        ma10 = ta.trend.sma_indicator(close, 10)
+        if len(df) < 130: return None
+        close = df["Close"]; low = df["Low"]; volume = df["Volume"]
+        c_now = float(close.iloc[-1]); l_now = float(low.iloc[-1])
+        l_prev= float(low.iloc[-2]);   v_now = float(volume.iloc[-1])
+        if v_now < 1_000_000 or c_now <= 20: return None
+        ma5   = ta.trend.sma_indicator(close, 5)
+        ma10  = ta.trend.sma_indicator(close, 10)
         ma120 = ta.trend.sma_indicator(close, 120)
-
-        ma5_now = float(ma5.iloc[-1])
-        ma10_now = float(ma10.iloc[-1])
+        ma5_now = float(ma5.iloc[-1]); ma10_now = float(ma10.iloc[-1])
         ma120_now = float(ma120.iloc[-1])
-
-        if c_now <= ma120_now:
-            return None
-
-        if not (
-            l_now < l_prev and
-            (l_now < ma5_now or l_now < ma10_now) and
-            (c_now > ma5_now * 1.001 or c_now > ma10_now * 1.001)
-        ):
-            return None
-
+        if c_now <= ma120_now: return None
+        if not (l_now < l_prev and
+                (l_now < ma5_now or l_now < ma10_now) and
+                (c_now > ma5_now * 1.001 or c_now > ma10_now * 1.001)): return None
         reclaim_label = "5MA" if c_now > ma5_now * 1.001 else "10MA"
         bt_res = run_backtest(df, "strong_trend_ma5", backtest_months)
-        rr = calculate_risk_reward(c_now, l_now, df.index[-1])
-        if rr is None:
-            return None
-
+        rr = calculate_risk_reward(c_now, l_now, df.index[-1])             # 1:2，上限 12%
+        if rr is None: return None
         return {
-            "代號": ticker,
-            "名稱": name,
-            "現價": round(c_now, 2),
-            "今日低點": round(l_now, 2),
-            "昨日低點": round(l_prev, 2),
-            "5MA": round(ma5_now, 2),
-            "10MA": round(ma10_now, 2),
+            "代號": ticker, "名稱": name, "現價": round(c_now, 2),
+            "今日低點": round(l_now, 2), "昨日低點": round(l_prev, 2),
+            "5MA": round(ma5_now, 2), "10MA": round(ma10_now, 2),
             "站回均線": reclaim_label,
-            **rr,
-            **(bt_res or {}),
-            "外資詳情": get_chip_link(ticker),
-            "狀態": "強勢回測 5/10MA（底底低洗盤）⚡"
+            **rr, **(bt_res or {}),
+            "外資詳情": get_chip_link(ticker), "狀態": "強勢回測 5/10MA（底底低洗盤）⚡"
         }
-    except Exception:
-        return None
+    except Exception: return None
 
 
-# ✅ 已移除：週線盤整突破
+# -------------------------------------------------
+# 策略集合
+# -------------------------------------------------
 STRATEGIES = {
     "⚡ 強勢回測 5/10MA (底底低)": strategy_strong_trend_ma5,
-    "🌀 布林中線 (量縮黑K)": strategy_bollinger_mid,
-    "🛁 爆量回檔 (雙黑K站5MA)": strategy_washout_rebound,
-    "🚀 回後買上漲 (紅K過昨高)": strategy_pullback_buy_breakout,
+    "🌀 布林中線 (量縮黑K)":       strategy_bollinger_mid,
+    "🛁 爆量回檔 (雙黑K站5MA)":    strategy_washout_rebound,
+    "🚀 回後買上漲 (紅K過昨高)":   strategy_pullback_buy_breakout,
 }
 
 # -------------------------------------------------
@@ -874,12 +724,10 @@ else:
         with st.spinner("更新清單中..."):
             st.session_state["stock_map"] = get_all_tw_tickers()
             st.rerun()
-
     stock_map = st.session_state.get("stock_map", {})
     if not stock_map:
         st.session_state["stock_map"] = get_all_tw_tickers()
         stock_map = st.session_state["stock_map"]
-
     st.sidebar.write(f"目前快取: {len(stock_map)} 檔")
     limit = st.sidebar.slider("掃描數量", 50, 2000, 300)
     tickers = list(stock_map.keys())[:limit]
@@ -888,8 +736,7 @@ st.sidebar.header("策略選擇")
 selected = [k for k in STRATEGIES if st.sidebar.checkbox(k, True)]
 st.sidebar.markdown("---")
 backtest_period = st.sidebar.selectbox(
-    "回測區間 (月)",
-    [3, 6, 9, 12, 24],
+    "回測區間 (月)", [3, 6, 9, 12, 24],
     format_func=lambda x: f"過去 {x} 個月"
 )
 
@@ -903,13 +750,10 @@ tab_scan, tab_portfolio = st.tabs(["🔍 策略掃描", "📦 我的庫存"])
 # =================================================
 with tab_portfolio:
     st.subheader(f"📦 {user_name} 的庫存清單")
-
     st.markdown("### 🔔 停損停利警示")
     col_a1, col_a2 = st.columns([3, 1])
-
     with col_a1:
         alert_email = st.text_input("通知信箱（預設為登入帳號）", value=user_email, key="alert_email")
-
     with col_a2:
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("🔍 立即檢查並寄信", type="primary"):
@@ -919,7 +763,6 @@ with tab_portfolio:
             else:
                 with st.spinner("正在抓取即時價格並檢查..."):
                     triggered = check_and_alert(df_check, alert_email, force=True)
-
                 if triggered:
                     for t in triggered:
                         st.warning(
@@ -931,27 +774,22 @@ with tab_portfolio:
                     st.success("✅ 所有持股均在停損停利範圍內，無需通知。")
 
     st.markdown("---")
-
     with st.expander("➕ 手動新增持股", expanded=False):
         full_map_p = st.session_state.get("stock_map", {}) or get_all_tw_tickers()
-
         col1, col2, col3 = st.columns(3)
         with col1:
             p_ticker = st.text_input("代號 (例: 2330.TW)", key="p_ticker")
             p_name   = st.text_input("名稱", value=full_map_p.get(p_ticker, ""), key="p_name")
             p_sector = st.text_input("族群", key="p_sector")
-
         with col2:
             p_strategy  = st.selectbox("策略", list(STRATEGIES.keys()), key="p_strategy")
             p_buy_price = st.number_input("買入價", min_value=0.0, step=0.1, key="p_buy_price")
             p_lots      = st.number_input("張數", min_value=0, step=1, key="p_lots")
-
         with col3:
             p_sl   = st.number_input("停損價", min_value=0.0, step=0.1, key="p_sl")
             p_tp   = st.number_input("停利價", min_value=0.0, step=0.1, key="p_tp")
             p_note = st.text_input("備註", key="p_note")
             p_date = st.date_input("買入日期", value=date.today(), key="p_date")
-
         if st.button("✅ 新增到庫存", type="primary"):
             if not p_ticker:
                 st.error("請輸入代號！")
@@ -959,24 +797,16 @@ with tab_portfolio:
                 st.error("請輸入買入價！")
             else:
                 append_to_portfolio(portfolio_ws, {
-                    "買入日期": str(p_date),
-                    "代號": p_ticker,
-                    "名稱": p_name,
-                    "族群": p_sector,
-                    "策略": p_strategy,
-                    "買入價": p_buy_price,
+                    "買入日期": str(p_date), "代號": p_ticker, "名稱": p_name,
+                    "族群": p_sector, "策略": p_strategy, "買入價": p_buy_price,
                     "成本總額(元)": round(p_buy_price * p_lots * 1000, 0),
-                    "張數": p_lots,
-                    "停損價": p_sl,
-                    "停利價": p_tp,
-                    "備註": p_note,
+                    "張數": p_lots, "停損價": p_sl, "停利價": p_tp, "備註": p_note,
                 })
                 st.success(f"✅ {p_ticker} 已新增到庫存！")
                 st.rerun()
 
     st.markdown("---")
     df_port = load_portfolio(portfolio_ws)
-
     if df_port.empty:
         st.info("庫存是空的，可以從掃描結果一鍵加入，或手動新增。")
     else:
@@ -994,37 +824,26 @@ with tab_portfolio:
                 st.session_state["live_prices"] = {
                     tk: get_current_price(str(tk)) for tk in df_port["代號"].unique()
                 }
-
-        live_prices = st.session_state.get("live_prices", {})
-        df_display = df_port.copy()
+        live_prices  = st.session_state.get("live_prices", {})
+        df_display   = df_port.copy()
         df_display["現價"] = df_display["代號"].map(lambda x: live_prices.get(x, "—"))
 
         def calc_pnl(row):
             try:
-                if row["現價"] == "—":
-                    return "—"
-                buy = float(row["買入價"])
-                now = float(row["現價"])
-                return f"{round((now - buy) / buy * 100, 2)}%"
-            except Exception:
-                return "—"
+                if row["現價"] == "—": return "—"
+                return f"{round((float(row['現價']) - float(row['買入價'])) / float(row['買入價']) * 100, 2)}%"
+            except Exception: return "—"
 
         df_display["損益(%)"] = df_display.apply(calc_pnl, axis=1)
         st.dataframe(df_display, use_container_width=True)
-
         st.markdown("##### 🗑️ 刪除持股")
         del_idx = st.number_input(
             "輸入要刪除的列號（從 0 開始）",
-            min_value=0,
-            max_value=max(0, len(df_port)-1),
-            step=1,
-            key="del_idx"
+            min_value=0, max_value=max(0, len(df_port) - 1), step=1, key="del_idx"
         )
-
         if st.button("確認刪除"):
             delete_portfolio_row(portfolio_ws, int(del_idx))
-            st.success("已刪除！")
-            st.rerun()
+            st.success("已刪除！"); st.rerun()
 
 # =================================================
 # 🔍 策略掃描
@@ -1032,62 +851,41 @@ with tab_portfolio:
 with tab_scan:
 
     def render_results(strategy_name, rows):
-        if not rows:
-            return
-
+        if not rows: return
         st.subheader(f"📊 {strategy_name}　（{len(rows)} 筆）")
         df_res = pd.DataFrame(rows)
 
         if "布林中線" in df_res.columns:
-            target_cols = [
-                "代號","名稱","族群","現價","布林中線","布林上軌",
-                "停損價(SL)","停利價(TP)","潛在獲利","外資詳情"
-            ]
+            target_cols = ["代號","名稱","族群","現價","布林中線","布林上軌",
+                           "停損價(SL)","停利價(TP)","潛在獲利","外資詳情"]
         elif "紅K實體" in df_res.columns:
-            target_cols = [
-                "代號","名稱","族群","現價","今日漲幅","紅K實體",
-                "昨日最高","5MA","停損價(SL)","停利價(TP)","潛在獲利","外資詳情"
-            ]
+            target_cols = ["代號","名稱","族群","現價","今日漲幅","紅K實體",
+                           "昨日最高","5MA","停損價(SL)","停利價(TP)","潛在獲利","外資詳情"]
         elif "今日低點" in df_res.columns:
-            target_cols = [
-                "代號","名稱","族群","現價","今日低點","昨日低點","5MA","10MA",
-                "站回均線","停損價(SL)","停利價(TP)","潛在獲利","外資詳情"
-            ]
+            target_cols = ["代號","名稱","族群","現價","今日低點","昨日低點",
+                           "5MA","10MA","站回均線","停損價(SL)","停利價(TP)","潛在獲利","外資詳情"]
         elif "5日乖離率" in df_res.columns:
-            target_cols = [
-                "代號","名稱","族群","現價","漲幅","5日乖離率",
-                "停損價(SL)","停利價(TP)","潛在獲利","外資詳情"
-            ]
+            target_cols = ["代號","名稱","族群","現價","漲幅","5日乖離率",
+                           "停損價(SL)","停利價(TP)","潛在獲利","外資詳情"]
         else:
-            target_cols = [
-                "代號","名稱","族群","現價","停損價(SL)","停利價(TP)","潛在獲利","外資詳情"
-            ]
+            target_cols = ["代號","名稱","族群","現價","停損價(SL)","停利價(TP)","潛在獲利","外資詳情"]
 
         final_cols = [c for c in target_cols if c in df_res.columns]
-
         if "回測勝率" in df_res.columns:
             final_cols += ["回測勝率", "平均獲利", "總交易"]
-
         if "訊號日期" in df_res.columns and "訊號日期" not in final_cols:
             final_cols = ["訊號日期"] + final_cols
-
-        other_cols = [
-            c for c in df_res.columns
-            if c not in final_cols and c not in target_cols and c != "策略"
-        ]
+        other_cols = [c for c in df_res.columns
+                      if c not in final_cols and c not in target_cols and c != "策略"]
 
         st.dataframe(
-            df_res[final_cols + other_cols],
-            use_container_width=True,
-            column_config={
-                "外資詳情": st.column_config.LinkColumn("外資詳情", display_text="查看數據")
-            }
+            df_res[final_cols + other_cols], use_container_width=True,
+            column_config={"外資詳情": st.column_config.LinkColumn("外資詳情", display_text="查看數據")}
         )
 
         st.markdown("**➕ 將篩選結果加入庫存：**")
-        df_port_now = load_portfolio(portfolio_ws)
+        df_port_now    = load_portfolio(portfolio_ws)
         existing_codes = set(df_port_now["代號"].astype(str).tolist()) if not df_port_now.empty else set()
-
         cols_add = st.columns(min(len(rows), 5))
         for idx, row in enumerate(rows):
             with cols_add[idx % 5]:
@@ -1098,19 +896,13 @@ with tab_scan:
                     if st.button(f"{row['代號']} {row['現價']}", key=btn_key):
                         append_to_portfolio(portfolio_ws, {
                             "買入日期": date.today().strftime("%Y-%m-%d"),
-                            "代號": row.get("代號", ""),
-                            "名稱": row.get("名稱", ""),
-                            "族群": row.get("族群", ""),
-                            "策略": strategy_name,
-                            "買入價": row.get("現價", ""),
-                            "成本總額(元)": "",
-                            "張數": "",
-                            "停損價": row.get("停損價(SL)", ""),
-                            "停利價": row.get("停利價(TP)", ""),
-                            "備註": "",
+                            "代號": row.get("代號",""), "名稱": row.get("名稱",""),
+                            "族群": row.get("族群",""), "策略": strategy_name,
+                            "買入價": row.get("現價",""), "成本總額(元)": "",
+                            "張數": "", "停損價": row.get("停損價(SL)",""),
+                            "停利價": row.get("停利價(TP)",""), "備註": "",
                         })
-                        st.success(f"✅ {row['代號']} 已加入庫存！")
-                        st.rerun()
+                        st.success(f"✅ {row['代號']} 已加入庫存！"); st.rerun()
 
     if st.button("開始掃描", type="primary"):
         if not tickers:
@@ -1119,23 +911,18 @@ with tab_scan:
             if "sector_map" not in st.session_state:
                 with st.spinner("載入產業族群資料..."):
                     st.session_state["sector_map"] = get_sector_map()
-
             _sector_map = st.session_state["sector_map"]
-            result = {k: [] for k in selected}
-
+            result      = {k: [] for k in selected}
             progress_bar = st.progress(0)
-            status_text = st.empty()
+            status_text  = st.empty()
 
             for i in range(0, len(tickers), 50):
                 progress_bar.progress(min((i + 50) / len(tickers), 1.0))
                 batch_tickers = tickers[i: i + 50]
                 status_text.text(f"掃描中... {i+1} ~ {min(i+50, len(tickers))} / {len(tickers)} 檔")
-
                 data_dict = download_batch_data(batch_tickers)
                 if not data_dict:
-                    time.sleep(1)
-                    continue
-
+                    time.sleep(1); continue
                 for t, df_data in data_dict.items():
                     name = stock_map.get(t, t)
                     for k in selected:
@@ -1147,21 +934,17 @@ with tab_scan:
                                 result[k].append(r)
                         except Exception:
                             continue
-
                 time.sleep(0.2)
 
-            progress_bar.empty()
-            status_text.empty()
+            progress_bar.empty(); status_text.empty()
             st.session_state["scan_results"] = result
             st.rerun()
 
     if "scan_results" in st.session_state:
-        result = st.session_state["scan_results"]
+        result     = st.session_state["scan_results"]
         total_hits = sum(len(v) for v in result.values())
-
         for k in selected:
             render_results(k, result.get(k, []))
-
         if total_hits == 0:
             st.info("掃描完成，沒有符合條件的股票。")
         else:
