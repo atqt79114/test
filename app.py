@@ -482,6 +482,15 @@ def run_backtest(df, strategy_type, months):
         ma120 = ta.trend.sma_indicator(close, 120)
         bb20  = ta.volatility.BollingerBands(close=close, window=20, window_dev=2)
 
+        # ★ 回後買上漲用的滾動指標（統一常數，跟即時掃描共用同一套定義）
+        PULLBACK_WINDOW = 10
+        VOL_RATIO_THRESHOLD = 1.5
+        high_roll_max10 = high.rolling(PULLBACK_WINDOW).max().shift(1)
+        low_roll_min10  = low.rolling(PULLBACK_WINDOW).min().shift(1)
+        vol_roll_avg5   = volume.rolling(5).mean().shift(1)
+        touched_series  = ((low <= ma5) | (low <= ma10)).astype(int)
+        touched_roll10  = touched_series.rolling(PULLBACK_WINDOW).max().shift(1)
+
         for i in range(start_idx, len(df) - 1):
             c_curr = float(close.iloc[i])
             h_curr = float(high.iloc[i])
@@ -529,14 +538,20 @@ def run_backtest(df, strategy_type, months):
                     signal = True; curr_sl = m5c * 0.99
                     curr_tp = _bt_tp(c_curr, curr_sl)
 
-            # 🚀 回後買上漲 → 1:2 上限 12%
+            # 🚀 回後買上漲 → 回檔確認 + 近期高點 + 量增1.5倍，停利1:2上限12%
             elif strategy_type == "pullback_buy_breakout" and i >= 1:
-                hp = float(high.iloc[i-1])
-                if (c_curr > o_curr and (c_curr - o_curr) / o_curr * 100 > 2.0 and
-                        c_curr > hp and c_curr > ma5.iloc[i] and c_curr > ma10.iloc[i] and
-                        c_curr > ma20.iloc[i] and c_curr > ma60.iloc[i] and c_curr > ma120.iloc[i]):
-                    signal = True; curr_sl = hp * 0.99
-                    curr_tp = _bt_tp(c_curr, curr_sl)
+                rh = high_roll_max10.iloc[i]
+                lm = low_roll_min10.iloc[i]
+                va = vol_roll_avg5.iloc[i]
+                tp_flag = touched_roll10.iloc[i]
+                if pd.notna(rh) and pd.notna(lm) and pd.notna(va) and pd.notna(tp_flag) and va > 0 and o_curr > 0:
+                    body_pct_bt = (c_curr - o_curr) / o_curr * 100
+                    if (c_curr > o_curr and body_pct_bt > 2.0 and c_curr > rh and
+                            c_curr > ma5.iloc[i] and c_curr > ma10.iloc[i] and c_curr > ma20.iloc[i] and
+                            c_curr > ma60.iloc[i] and c_curr > ma120.iloc[i] and
+                            tp_flag == 1 and volume.iloc[i] >= va * VOL_RATIO_THRESHOLD):
+                        signal = True; curr_sl = lm * 0.99
+                        curr_tp = _bt_tp(c_curr, curr_sl)
 
             # ⚡ 強勢回測 5/10MA → 1:2 上限 12%
             elif strategy_type == "strong_trend_ma5" and i >= 1:
@@ -648,38 +663,72 @@ def strategy_washout_rebound(ticker, name, df, backtest_months):
     except Exception: return None
 
 
-def strategy_pullback_buy_breakout(ticker, name, df, backtest_months):
-    """停利 = 1:2 風報比，上限 +12%"""
+def strategy_pullback_buy_breakout(ticker, name, df, backtest_months,
+                                    pullback_window=10, vol_ratio_threshold=1.5):
+    """回後買上漲：近N日內回檔曾碰5MA/10MA + 站穩所有均線 + 過近期高點 + 量增1.5倍，停利1:2上限+12%"""
     try:
         if len(df) < 130: return None
-        close = df["Close"]; open_p = df["Open"]; high = df["High"]; volume = df["Volume"]
+        close = df["Close"]; open_p = df["Open"]; high = df["High"]; low = df["Low"]; volume = df["Volume"]
         c_now = float(close.iloc[-1]); o_now = float(open_p.iloc[-1])
-        h_prev= float(high.iloc[-2]);  v_now = float(volume.iloc[-1])
+        v_now = float(volume.iloc[-1])
         if v_now < 1_000_000 or c_now < 10 or ticker.startswith("28"): return None
+        if o_now <= 0: return None
+
         ma5   = ta.trend.sma_indicator(close, 5)
         ma10  = ta.trend.sma_indicator(close, 10)
         ma20  = ta.trend.sma_indicator(close, 20)
         ma60  = ta.trend.sma_indicator(close, 60)
         ma120 = ta.trend.sma_indicator(close, 120)
-        if c_now <= float(ma5.iloc[-1]) or c_now <= o_now: return None
+
+        ma5_now, ma10_now, ma20_now = float(ma5.iloc[-1]), float(ma10.iloc[-1]), float(ma20.iloc[-1])
+        ma60_now, ma120_now = float(ma60.iloc[-1]), float(ma120.iloc[-1])
+
+        # 今日收紅K，實體 >2%
+        if c_now <= o_now: return None
         body_pct = (c_now - o_now) / o_now * 100
-        if body_pct <= 2.0 or c_now <= h_prev: return None
-        if not (c_now > float(ma10.iloc[-1]) and c_now > float(ma20.iloc[-1]) and
-                c_now > float(ma60.iloc[-1]) and c_now > float(ma120.iloc[-1])): return None
+        if body_pct <= 2.0: return None
+
+        # 站穩所有均線
+        if not (c_now > ma5_now and c_now > ma10_now and c_now > ma20_now
+                and c_now > ma60_now and c_now > ma120_now):
+            return None
+
+        # ★ 前高改用近N日高點（不含今天）
+        recent_high = float(high.iloc[-(pullback_window + 1):-1].max())
+        if c_now <= recent_high: return None
+
+        # ★ 回檔確認：近N日內（不含今天）曾經觸及或跌破 5MA 或 10MA
+        recent_low_s  = low.iloc[-(pullback_window + 1):-1]
+        recent_ma5_s  = ma5.iloc[-(pullback_window + 1):-1]
+        recent_ma10_s = ma10.iloc[-(pullback_window + 1):-1]
+        touched_pullback = ((recent_low_s <= recent_ma5_s) | (recent_low_s <= recent_ma10_s)).any()
+        if not touched_pullback: return None
+
+        # ★ 量能相對比較：今日量 ≥ 近5日均量(不含今天) × 1.5倍
+        avg_vol_5 = float(volume.iloc[-6:-1].mean())
+        if avg_vol_5 <= 0 or v_now < avg_vol_5 * vol_ratio_threshold: return None
+        vol_ratio = v_now / avg_vol_5
+
+        # 停損 = 回檔期間最低點 × 0.99（跌破代表假突破）
+        pullback_low = float(low.iloc[-(pullback_window + 1):-1].min())
+
         total_pct = (c_now - float(close.iloc[-2])) / float(close.iloc[-2]) * 100
         bt_res = run_backtest(df, "pullback_buy_breakout", backtest_months)
-        rr = calculate_risk_reward(c_now, h_prev * 0.99, df.index[-1])    # 1:2，上限 12%
+        rr = calculate_risk_reward(c_now, pullback_low * 0.99, df.index[-1])
         if rr is None: return None
+
         return {
             "代號": ticker, "名稱": name, "現價": round(c_now, 2),
             "今日漲幅": f"{round(total_pct, 2)}%",
             "紅K實體": f"{round(body_pct, 2)}%",
-            "昨日最高": round(h_prev, 2),
-            "5MA": round(float(ma5.iloc[-1]), 2),
+            f"近{pullback_window}日高點": round(recent_high, 2),
+            "回檔低點": round(pullback_low, 2),
+            "量增倍數(比5日均量)": f"{round(vol_ratio, 2)}x",
             **rr, **(bt_res or {}),
-            "外資詳情": get_chip_link(ticker), "狀態": "回後買上漲 🚀"
+            "外資詳情": get_chip_link(ticker), "狀態": "回檔止跌回升過前高 🚀"
         }
-    except Exception: return None
+    except Exception:
+        return None
 
 
 def strategy_strong_trend_ma5(ticker, name, df, backtest_months):
