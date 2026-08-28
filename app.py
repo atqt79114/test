@@ -275,7 +275,7 @@ st.markdown("""
 
 ---
 #### 🧠 停利邏輯說明
-- 🌀 **布林中線**：停利 = 布林上軌（目標明確，保留原邏輯）
+- 🌀 **布林突破**：站穩所有均線 + 量增1.5倍，停損 = 布林中軌，停利採 1:2 風報比（上限 +12%）
 - 🛁 🚀 ⚡ **其他策略**：**1:2 風報比，但停利上限 +12%**
   - 例：現價 100，停損 97（風險 3元）→ 停利 = min(106, 112) = 106
   - 避免停損距離過小導致停利目標離譜地遠
@@ -418,7 +418,7 @@ def download_batch_data(tickers_batch):
 # -------------------------------------------------
 def calculate_risk_reward(c_now, sl_price, date_now, custom_target=None, rr_cap=0.12):
     """
-    custom_target : 直接指定停利（布林中線用布林上軌）
+    custom_target : 直接指定停利
     rr_cap        : 停利上限，預設 12%
     一般策略邏輯  : 停利 = min( 現價 + 風險×2, 現價×1.12 )
     """
@@ -496,10 +496,6 @@ def run_backtest(df, strategy_type, months):
                 if c_curr < stop_loss_price:
                     trades.append((c_curr - entry_price) / entry_price)
                     in_position = False; continue
-                if strategy_type == "bollinger_mid":
-                    u = bb20.bollinger_hband().iloc[i]
-                    if pd.notna(u):
-                        target_price = float(u)
                 continue
 
             if volume.iloc[i] < 500_000:
@@ -507,15 +503,20 @@ def run_backtest(df, strategy_type, months):
 
             signal = False; curr_sl = curr_tp = 0
 
-            # 🌀 布林中線 → 停利用上軌（不 cap）
-            if strategy_type == "bollinger_mid":
-                mid  = bb20.bollinger_mavg().iloc[i]
-                upper= bb20.bollinger_hband().iloc[i]
-                pmid = bb20.bollinger_mavg().iloc[i - 1]
-                if pd.isna(mid) or pd.isna(upper) or pd.isna(pmid): continue
-                if c_curr > ma120.iloc[i] and abs(c_curr - mid) / mid <= 0.015 and mid > pmid:
-                    if c_curr < o_curr and volume.iloc[i] < volume.iloc[i - 1]:
-                        signal = True; curr_sl = mid * 0.97; curr_tp = float(upper)
+            # 🌀 布林突破 → 站穩所有均線 + 量增1.5倍，停利 1:2 上限 12%
+            elif_check = strategy_type == "bollinger_breakout" and i >= 1
+            if elif_check:
+                upper = bb20.bollinger_hband().iloc[i]
+                mid   = bb20.bollinger_mavg().iloc[i]
+                m5, m10, m20 = ma5.iloc[i], ma10.iloc[i], ma20.iloc[i]
+                m60, m120    = ma60.iloc[i], ma120.iloc[i]
+                v_curr = float(volume.iloc[i]); v_prev = float(volume.iloc[i - 1])
+                if all(pd.notna(v) for v in [upper, mid, m5, m10, m20, m60, m120]) and v_prev > 0:
+                    if (c_curr > float(upper) and c_curr > float(m5) and c_curr > float(m10)
+                            and c_curr > float(m20) and c_curr > float(m60) and c_curr > float(m120)
+                            and v_curr >= v_prev * 1.5):
+                        signal = True; curr_sl = float(mid)
+                        curr_tp = _bt_tp(c_curr, curr_sl)
 
             # 🛁 爆量回檔 → 1:2 上限 12%
             elif strategy_type == "washout" and i >= 1:
@@ -567,32 +568,51 @@ def run_backtest(df, strategy_type, months):
 # 策略函式
 # -------------------------------------------------
 
-def strategy_bollinger_mid(ticker, name, df, backtest_months):
-    """停利 = 布林上軌"""
+def strategy_bollinger_breakout(ticker, name, df, backtest_months):
+    """布林突破：收盤價突破上軌 + 站穩所有均線 + 量增1.5倍，停利 1:2（上限+12%）"""
     try:
         if len(df) < 125: return None
-        close = df["Close"]; open_p = df["Open"]; volume = df["Volume"]
-        c_now = float(close.iloc[-1]); o_now = float(open_p.iloc[-1])
+        close = df["Close"]; volume = df["Volume"]
+        c_now = float(close.iloc[-1])
         v_now = float(volume.iloc[-1]); v_prev = float(volume.iloc[-2])
-        ma120_now = ta.trend.sma_indicator(close, 120).iloc[-1]
-        if pd.isna(ma120_now) or v_now < 500_000 or c_now < float(ma120_now): return None
+        if v_now < 500_000: return None
+        if v_prev <= 0 or v_now < v_prev * 1.5: return None   # ★ 量增 1.5 倍濾網
+
+        ma5   = ta.trend.sma_indicator(close, 5)
+        ma10  = ta.trend.sma_indicator(close, 10)
+        ma20  = ta.trend.sma_indicator(close, 20)
+        ma60  = ta.trend.sma_indicator(close, 60)
+        ma120 = ta.trend.sma_indicator(close, 120)
+
+        ma5_now, ma10_now, ma20_now = float(ma5.iloc[-1]), float(ma10.iloc[-1]), float(ma20.iloc[-1])
+        ma60_now, ma120_now = float(ma60.iloc[-1]), float(ma120.iloc[-1])
+
         bb = ta.volatility.BollingerBands(close=close, window=20, window_dev=2)
-        mid_now = float(bb.bollinger_mavg().iloc[-1])
         upper_now = float(bb.bollinger_hband().iloc[-1])
-        mid_prev  = float(bb.bollinger_mavg().iloc[-2])
-        if pd.isna(mid_now) or pd.isna(upper_now) or pd.isna(mid_prev): return None
-        if abs(c_now - mid_now) / mid_now > 0.015: return None
-        if mid_now < mid_prev or c_now >= o_now or v_now >= v_prev: return None
-        bt_res = run_backtest(df, "bollinger_mid", backtest_months)
-        rr = calculate_risk_reward(c_now, mid_now * 0.97, df.index[-1], custom_target=upper_now)
+        mid_now   = float(bb.bollinger_mavg().iloc[-1])
+        if pd.isna(upper_now) or pd.isna(mid_now): return None
+
+        # 突破上軌
+        if c_now <= upper_now: return None
+        # 站穩所有均線
+        if not (c_now > ma5_now and c_now > ma10_now and c_now > ma20_now
+                and c_now > ma60_now and c_now > ma120_now):
+            return None
+
+        vol_ratio = v_now / v_prev
+        bt_res = run_backtest(df, "bollinger_breakout", backtest_months)
+        rr = calculate_risk_reward(c_now, mid_now, df.index[-1])  # 停損=布林中軌，1:2上限12%
         if rr is None: return None
+
         return {
             "代號": ticker, "名稱": name, "現價": round(c_now, 2),
-            "布林中線": round(mid_now, 2), "布林上軌": round(upper_now, 2),
+            "布林上軌": round(upper_now, 2), "布林中線": round(mid_now, 2),
+            "量增倍數": f"{round(vol_ratio, 2)}x",
             **rr, **(bt_res or {}),
-            "外資詳情": get_chip_link(ticker), "狀態": "中線黑K量縮 🌀"
+            "外資詳情": get_chip_link(ticker), "狀態": "布林突破上軌+站穩均線+量增1.5倍 🌀"
         }
-    except Exception: return None
+    except Exception:
+        return None
 
 
 def strategy_washout_rebound(ticker, name, df, backtest_months):
@@ -699,7 +719,7 @@ def strategy_strong_trend_ma5(ticker, name, df, backtest_months):
 # -------------------------------------------------
 STRATEGIES = {
     "⚡ 強勢回測 5/10MA (底底低)": strategy_strong_trend_ma5,
-    "🌀 布林中線 (量縮黑K)":       strategy_bollinger_mid,
+    "🌀 布林突破 (站穩所有均線+量增1.5倍)": strategy_bollinger_breakout,
     "🛁 爆量回檔 (雙黑K站5MA)":    strategy_washout_rebound,
     "🚀 回後買上漲 (紅K過昨高)":   strategy_pullback_buy_breakout,
 }
@@ -856,7 +876,7 @@ with tab_scan:
         df_res = pd.DataFrame(rows)
 
         if "布林中線" in df_res.columns:
-            target_cols = ["代號","名稱","族群","現價","布林中線","布林上軌",
+            target_cols = ["代號","名稱","族群","現價","布林上軌","布林中線","量增倍數",
                            "停損價(SL)","停利價(TP)","潛在獲利","外資詳情"]
         elif "紅K實體" in df_res.columns:
             target_cols = ["代號","名稱","族群","現價","今日漲幅","紅K實體",
