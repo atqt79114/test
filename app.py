@@ -424,12 +424,21 @@ def get_warrant_call_ranking_detail(top_n=30):
         except Exception:
             continue
 
+    # 「標的證券/指數」欄位只有名稱、沒有代號,反查 get_all_tw_tickers() 的代號↔名稱對照表
+    name_to_code = {}
+    try:
+        full_ticker_map = get_all_tw_tickers()  # {"2330.TW": "台積電", ...}
+        for ticker, nm in full_ticker_map.items():
+            name_to_code[nm.strip()] = ticker.split(".")[0]
+    except Exception:
+        pass
+
     def parse_underlying(text):
-        text = (text or "").strip()
-        m = re.match(r"^([0-9A-Za-z]{4,6})\s*(.*)$", text)
-        if m and m.group(1)[0].isdigit():
-            return m.group(1), m.group(2).strip()
-        return None, text
+        name = (text or "").strip()
+        if not name:
+            return None, None
+        code = name_to_code.get(name)
+        return code, name
 
     def days_to_expiry(expiry_str):
         try:
@@ -443,6 +452,7 @@ def get_warrant_call_ranking_detail(top_n=30):
     debug = {
         "權證基本資料筆數": len(warrants),
         "全市場成交資訊筆數": len(stock_day_all),
+        "股票代號對照表筆數": len(name_to_code),
         "類別為認購的權證數": 0,
         "能解析出標的代號的數量": 0,
         "有對應到成交金額(>0)的數量": 0,
