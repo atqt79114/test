@@ -1147,11 +1147,20 @@ with tab_warrant:
         )
         st.markdown("---")
         st.markdown("**查看個股權證明細：**")
+        def _price_entry(price_map, c):
+            """相容新格式 (price, source) tuple 與可能殘留的舊格式(單純數字)"""
+            v = price_map.get(c)
+            if isinstance(v, tuple):
+                return v
+            if v is not None:
+                return (v, None)
+            return (None, None)
+
         for _, row in df_ranking.iterrows():
             code, name = row["代號"], row["名稱"]
             with st.expander(f"{code} {name}（{row['成交金額(萬)']} 萬 / {row['權證檔數']} 檔）"):
                 detail_df = detail_dfs.get(code, pd.DataFrame())
-                price_key = f"_warrant_price_{code}"
+                price_key = f"_warrant_price_v2_{code}"
                 if not detail_df.empty:
                     if st.button("💰 載入價格", key=f"load_price_{code}"):
                         with st.spinner("查詢價格中..."):
@@ -1162,10 +1171,10 @@ with tab_warrant:
                     if price_map:
                         detail_df = detail_df.copy()
                         detail_df.insert(2, "價格", detail_df["權證代碼"].map(
-                            lambda c: price_map.get(c, (None, None))[0]
+                            lambda c: _price_entry(price_map, c)[0]
                         ))
                         detail_df.insert(3, "價格來源", detail_df["權證代碼"].map(
-                            lambda c: price_map.get(c, (None, None))[1]
+                            lambda c: _price_entry(price_map, c)[1]
                         ))
                         st.caption(
                             "「即時」為當下有新成交的盤中價格;「前一日收盤」為系統查無即時成交時的備援參考價,"
