@@ -497,7 +497,6 @@ def get_warrant_call_ranking_detail(top_n=30):
 
         volume = volume_map.get(warrant_code, 0)
         expiry_days = days_to_expiry(w.get("履約截止日"))
-        avg_price = round(amount / volume, 2) if volume > 0 else None
 
         if u_code not in ranking:
             ranking[u_code] = {"代號": u_code, "名稱": u_name, "成交金額(萬)": 0, "權證檔數": 0}
@@ -509,7 +508,6 @@ def get_warrant_call_ranking_detail(top_n=30):
             "權證名稱": warrant_name,
             "分類": category,
             "到期天數": expiry_days,
-            "均價": avg_price,
             "成交張數": round(volume / 1000),
             "成交金額(萬)": round(amount / 10000, 1),
         })
@@ -534,6 +532,38 @@ def get_warrant_call_ranking_detail(top_n=30):
         for code, rows_ in detail_by_underlying.items()
     }
     return df_ranking, detail_dfs, None
+
+
+def get_warrant_last_prices(warrant_codes):
+    """
+    按需查詢權證最新成交價(收盤後即為當日收盤價)。
+    TWSE 開放資料沒有權證收盤價欄位,改用基本市況報導網站的即時報價 API,
+    一次最多帶 100 檔代號批次查詢,避免觸發 TWSE 的請求頻率限制。
+    """
+    headers = {"User-Agent": "Mozilla/5.0"}
+    price_map = {}
+    codes = list(dict.fromkeys(warrant_codes))  # 去重,保留順序
+    batch_size = 100
+    for i in range(0, len(codes), batch_size):
+        batch = codes[i:i + batch_size]
+        ex_ch = "|".join(f"tse_{c}.tw" for c in batch)
+        url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch={ex_ch}"
+        try:
+            r = requests.get(url, headers=headers, verify=False, timeout=15)
+            data = r.json()
+            for item in data.get("msgArray", []):
+                code = (item.get("c") or "").strip()
+                price_str = (item.get("z") or "").strip()  # z=成交價,無成交時為 '-'
+                if not code:
+                    continue
+                if price_str and price_str != "-":
+                    try:
+                        price_map[code] = float(price_str)
+                    except ValueError:
+                        pass
+        except Exception:
+            continue
+    return price_map
 
 
 def clean_ohlcv_df(df):
@@ -1109,8 +1139,20 @@ with tab_warrant:
         for _, row in df_ranking.iterrows():
             code, name = row["代號"], row["名稱"]
             with st.expander(f"{code} {name}（{row['成交金額(萬)']} 萬 / {row['權證檔數']} 檔）"):
+                detail_df = detail_dfs.get(code, pd.DataFrame())
+                price_key = f"_warrant_price_{code}"
+                if not detail_df.empty:
+                    if st.button("💰 載入收盤價", key=f"load_price_{code}"):
+                        with st.spinner("查詢收盤價中..."):
+                            st.session_state[price_key] = get_warrant_last_prices(
+                                detail_df["權證代碼"].tolist()
+                            )
+                    price_map = st.session_state.get(price_key)
+                    if price_map:
+                        detail_df = detail_df.copy()
+                        detail_df.insert(2, "收盤價", detail_df["權證代碼"].map(price_map))
                 st.dataframe(
-                    detail_dfs.get(code, pd.DataFrame()),
+                    detail_df,
                     use_container_width=True, hide_index=True
                 )
 
