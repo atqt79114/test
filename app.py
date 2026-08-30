@@ -425,7 +425,7 @@ def get_warrant_call_ranking_detail(top_n=30):
             amount_raw = str(row.get("成交金額", "0")).replace(",", "").strip()
             volume_raw = str(row.get("成交張數", "0")).replace(",", "").strip()
             turnover_map[code] = int(float(amount_raw or 0))
-            volume_map[code] = int(float(volume_raw or 0))
+            volume_map[code] = int(float(volume_raw or 0))  # API 實際單位為「股」,顯示前需 /1000 換算成「張」
         except Exception:
             continue
 
@@ -497,6 +497,7 @@ def get_warrant_call_ranking_detail(top_n=30):
 
         volume = volume_map.get(warrant_code, 0)
         expiry_days = days_to_expiry(w.get("履約截止日"))
+        avg_price = round(amount / volume, 2) if volume > 0 else None
 
         if u_code not in ranking:
             ranking[u_code] = {"代號": u_code, "名稱": u_name, "成交金額(萬)": 0, "權證檔數": 0}
@@ -508,7 +509,8 @@ def get_warrant_call_ranking_detail(top_n=30):
             "權證名稱": warrant_name,
             "分類": category,
             "到期天數": expiry_days,
-            "成交張數": volume,
+            "均價": avg_price,
+            "成交張數": round(volume / 1000),
             "成交金額(萬)": round(amount / 10000, 1),
         })
 
