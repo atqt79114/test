@@ -536,9 +536,13 @@ def get_warrant_call_ranking_detail(top_n=30):
 
 def get_warrant_last_prices(warrant_codes):
     """
-    按需查詢權證最新成交價(收盤後即為當日收盤價)。
+    按需查詢權證最新成交價。
     TWSE 開放資料沒有權證收盤價欄位,改用基本市況報導網站的即時報價 API,
     一次最多帶 100 檔代號批次查詢,避免觸發 TWSE 的請求頻率限制。
+
+    注意:這是「即時報價」系統,z(當前盤中成交價)只有在該權證當下有新成交時才會有值,
+    休市日或冷門權證常常是空的。此時退而求其次改用 y(前一交易日收盤價)顯示,
+    並標記來源,避免誤把參考價當成精確的當日收盤價。
     """
     headers = {"User-Agent": "Mozilla/5.0"}
     price_map = {}
@@ -553,12 +557,19 @@ def get_warrant_last_prices(warrant_codes):
             data = r.json()
             for item in data.get("msgArray", []):
                 code = (item.get("c") or "").strip()
-                price_str = (item.get("z") or "").strip()  # z=成交價,無成交時為 '-'
                 if not code:
                     continue
-                if price_str and price_str != "-":
+                z_str = (item.get("z") or "").strip()  # 當前盤中成交價
+                y_str = (item.get("y") or "").strip()  # 前一交易日收盤價(備援)
+                if z_str and z_str != "-":
                     try:
-                        price_map[code] = float(price_str)
+                        price_map[code] = (float(z_str), "即時")
+                        continue
+                    except ValueError:
+                        pass
+                if y_str and y_str != "-":
+                    try:
+                        price_map[code] = (float(y_str), "前一日收盤")
                     except ValueError:
                         pass
         except Exception:
@@ -1142,15 +1153,24 @@ with tab_warrant:
                 detail_df = detail_dfs.get(code, pd.DataFrame())
                 price_key = f"_warrant_price_{code}"
                 if not detail_df.empty:
-                    if st.button("💰 載入收盤價", key=f"load_price_{code}"):
-                        with st.spinner("查詢收盤價中..."):
+                    if st.button("💰 載入價格", key=f"load_price_{code}"):
+                        with st.spinner("查詢價格中..."):
                             st.session_state[price_key] = get_warrant_last_prices(
                                 detail_df["權證代碼"].tolist()
                             )
                     price_map = st.session_state.get(price_key)
                     if price_map:
                         detail_df = detail_df.copy()
-                        detail_df.insert(2, "收盤價", detail_df["權證代碼"].map(price_map))
+                        detail_df.insert(2, "價格", detail_df["權證代碼"].map(
+                            lambda c: price_map.get(c, (None, None))[0]
+                        ))
+                        detail_df.insert(3, "價格來源", detail_df["權證代碼"].map(
+                            lambda c: price_map.get(c, (None, None))[1]
+                        ))
+                        st.caption(
+                            "「即時」為當下有新成交的盤中價格;「前一日收盤」為系統查無即時成交時的備援參考價,"
+                            "非精確的當日收盤價,休市日或冷門權證較常見這種情況。"
+                        )
                 st.dataframe(
                     detail_df,
                     use_container_width=True, hide_index=True
