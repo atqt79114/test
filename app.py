@@ -451,7 +451,7 @@ def get_warrant_call_ranking_detail(top_n=30):
     sample_underlying_raw = []
 
     for w in warrants:
-        category = (w.get("類別") or "").strip()
+        category = (w.get("權證類型") or "").strip()
         sample_categories.add(category)
         if "購" not in category:
             continue  # 只統計認購權證
