@@ -422,8 +422,10 @@ def get_warrant_call_ranking_detail(top_n=30):
     for row in warrant_trading:
         try:
             code = str(row.get("權證代號", "")).strip()
-            turnover_map[code] = int(str(row.get("成交金額", "0")).replace(",", "").strip() or 0)
-            volume_map[code] = int(str(row.get("成交張數", "0")).replace(",", "").strip() or 0)
+            amount_raw = str(row.get("成交金額", "0")).replace(",", "").strip()
+            volume_raw = str(row.get("成交張數", "0")).replace(",", "").strip()
+            turnover_map[code] = int(float(amount_raw or 0))
+            volume_map[code] = int(float(volume_raw or 0))
         except Exception:
             continue
 
@@ -444,8 +446,15 @@ def get_warrant_call_ranking_detail(top_n=30):
         return code, name
 
     def days_to_expiry(expiry_str):
+        """TWSE 日期欄位為民國年格式(例:1150828 = 民國115年08月28日 = 西元2026/08/28)"""
         try:
-            d = pd.to_datetime(str(expiry_str), format="%Y%m%d")
+            s = str(expiry_str).strip()
+            if not s or len(s) < 6:
+                return None
+            roc_year = int(s[:-4])
+            month_day = s[-4:]
+            greg_year = roc_year + 1911
+            d = pd.to_datetime(f"{greg_year}{month_day}", format="%Y%m%d")
             return max((d - pd.Timestamp.now().normalize()).days, 0)
         except Exception:
             return None
