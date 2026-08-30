@@ -415,6 +415,8 @@ def get_warrant_call_ranking_detail(top_n=30):
     if not isinstance(warrant_trading, list) or not warrant_trading:
         return None, None, "t187ap42_L 回傳格式異常或為空(可能非交易日或當日尚無權證成交)"
 
+    _wt_sample = warrant_trading[0] if warrant_trading else {}
+
     turnover_map = {}
     volume_map = {}  # 單位:張(1張=1000權證單位)
     for row in warrant_trading:
@@ -453,6 +455,7 @@ def get_warrant_call_ranking_detail(top_n=30):
     debug = {
         "權證基本資料筆數": len(warrants),
         "全市場成交資訊筆數": len(warrant_trading),
+        "t187ap42_L原始樣本(第一筆)": _wt_sample,
         "股票代號對照表筆數": len(name_to_code),
         "類別為認購的權證數": 0,
         "能解析出標的代號的數量": 0,
