@@ -5,6 +5,7 @@ import ta
 import requests
 import warnings
 import time
+import re
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -369,6 +370,129 @@ def get_sector_map():
 
 def get_sector(ticker, sector_map):
     return sector_map.get(ticker, "—")
+
+
+# -------------------------------------------------
+# 🎯 大機率買盤：認購權證成交金額排行 + 個股權證明細
+# -------------------------------------------------
+@st.cache_data(ttl=3600 * 4)
+def get_warrant_call_ranking_detail(top_n=30):
+    """
+    回傳 (標的排行榜 DataFrame, {標的代號: 該標的權證明細 DataFrame}, 錯誤訊息)
+
+    資料來源:
+    1. TWSE OpenAPI 上市權證基本資料 (權證代號 <-> 標的股票 對照表)
+       https://openapi.twse.com.tw/v1/opendata/t187ap37_L
+    2. TWSE 個股日成交資訊 (全市場當日成交金額/成交量,含權證)
+       https://www.twse.com.tw/exchangeReport/STOCK_DAY_ALL?response=json
+
+    邏輯:
+    - 只統計「認購」類別的權證(視為潛在買盤避險行為的間接推論指標)
+    - 依「標的股票代號」把旗下所有認購權證的成交金額加總、排序
+    - 同時保留每檔權證各自的成交明細,供點開查看
+    """
+    headers = {"User-Agent": "Mozilla/5.0"}
+
+    try:
+        r1 = requests.get(
+            "https://openapi.twse.com.tw/v1/opendata/t187ap37_L",
+            headers=headers, verify=False, timeout=20
+        )
+        warrants = r1.json()
+    except Exception as e:
+        return None, None, f"權證基本資料抓取失敗：{e}"
+
+    try:
+        r2 = requests.get(
+            "https://www.twse.com.tw/exchangeReport/STOCK_DAY_ALL?response=json",
+            headers=headers, verify=False, timeout=20
+        )
+        stock_day_all = r2.json()
+    except Exception as e:
+        return None, None, f"全市場成交資訊抓取失敗：{e}"
+
+    fields = stock_day_all.get("fields", [])
+    rows = stock_day_all.get("data", [])
+    if "證券代號" not in fields or "成交金額" not in fields or "成交股數" not in fields:
+        return None, None, f"STOCK_DAY_ALL 回傳格式異常,欄位為：{fields}"
+
+    idx_code   = fields.index("證券代號")
+    idx_amount = fields.index("成交金額")
+    idx_vol    = fields.index("成交股數")
+
+    turnover_map = {}
+    volume_map = {}
+    for row in rows:
+        try:
+            code = row[idx_code].strip()
+            turnover_map[code] = int(str(row[idx_amount]).replace(",", "").strip() or 0)
+            volume_map[code] = int(str(row[idx_vol]).replace(",", "").strip() or 0)
+        except Exception:
+            continue
+
+    def parse_underlying(text):
+        text = (text or "").strip()
+        m = re.match(r"^([0-9A-Za-z]{4,6})\s*(.*)$", text)
+        if m and m.group(1)[0].isdigit():
+            return m.group(1), m.group(2).strip()
+        return None, text
+
+    def days_to_expiry(expiry_str):
+        try:
+            d = pd.to_datetime(str(expiry_str), format="%Y%m%d")
+            return max((d - pd.Timestamp.now().normalize()).days, 0)
+        except Exception:
+            return None
+
+    ranking = {}
+    detail_by_underlying = {}
+
+    for w in warrants:
+        category = (w.get("類別") or "").strip()
+        if "購" not in category:
+            continue  # 只統計認購權證
+
+        warrant_code = (w.get("權證代號") or "").strip()
+        warrant_name = (w.get("權證簡稱") or "").strip()
+        u_code, u_name = parse_underlying(w.get("標的證券/指數", ""))
+        if not u_code:
+            continue  # 標的是指數(如台指)則略過,只做個股排行
+
+        amount = turnover_map.get(warrant_code, 0)
+        if amount <= 0:
+            continue
+
+        volume = volume_map.get(warrant_code, 0)
+        expiry_days = days_to_expiry(w.get("履約截止日"))
+
+        if u_code not in ranking:
+            ranking[u_code] = {"代號": u_code, "名稱": u_name, "成交金額(萬)": 0, "權證檔數": 0}
+        ranking[u_code]["成交金額(萬)"] += amount
+        ranking[u_code]["權證檔數"] += 1
+
+        detail_by_underlying.setdefault(u_code, []).append({
+            "權證代碼": warrant_code,
+            "權證名稱": warrant_name,
+            "分類": category,
+            "到期天數": expiry_days,
+            "成交量(股)": volume,
+            "成交金額(萬)": round(amount / 10000, 1),
+        })
+
+    if not ranking:
+        return None, None, "目前無資料(可能非交易日或 TWSE 尚未更新)"
+
+    df_ranking = pd.DataFrame(
+        sorted(ranking.values(), key=lambda x: x["成交金額(萬)"], reverse=True)[:top_n]
+    )
+    df_ranking["成交金額(萬)"] = round(df_ranking["成交金額(萬)"] / 10000, 1)
+    df_ranking.insert(0, "排名", range(1, len(df_ranking) + 1))
+
+    detail_dfs = {
+        code: pd.DataFrame(rows_).sort_values("成交金額(萬)", ascending=False)
+        for code, rows_ in detail_by_underlying.items()
+    }
+    return df_ranking, detail_dfs, None
 
 
 def clean_ohlcv_df(df):
@@ -812,7 +936,7 @@ backtest_period = st.sidebar.selectbox(
 # -------------------------------------------------
 # 頁籤
 # -------------------------------------------------
-tab_scan, tab_portfolio = st.tabs(["🔍 策略掃描", "📦 我的庫存"])
+tab_scan, tab_portfolio, tab_warrant = st.tabs(["🔍 策略掃描", "📦 我的庫存", "🎯 大機率買盤"])
 
 # =================================================
 # 📦 我的庫存
@@ -913,6 +1037,37 @@ with tab_portfolio:
         if st.button("確認刪除"):
             delete_portfolio_row(portfolio_ws, int(del_idx))
             st.success("已刪除！"); st.rerun()
+
+# =================================================
+# 🎯 大機率買盤
+# =================================================
+with tab_warrant:
+    st.subheader("🎯 大機率買盤（認購權證成交金額排行）")
+    st.caption(
+        "統計上市認購權證依標的股票加總成交金額,金額愈高代表發行商避險買盤壓力愈大的可能性愈高。"
+        "此為間接推論指標,非即時籌碼,僅供參考,不構成投資建議。點選下方標的可展開查看該標的旗下"
+        "每一檔認購權證的成交明細。"
+    )
+    if st.button("🔄 重新整理排行榜", key="refresh_warrant"):
+        get_warrant_call_ranking_detail.clear()
+
+    df_ranking, detail_dfs, warrant_err = get_warrant_call_ranking_detail()
+    if warrant_err:
+        st.warning(warrant_err)
+    else:
+        st.dataframe(
+            df_ranking[["排名", "代號", "名稱", "成交金額(萬)", "權證檔數"]],
+            use_container_width=True, hide_index=True
+        )
+        st.markdown("---")
+        st.markdown("**查看個股權證明細：**")
+        for _, row in df_ranking.iterrows():
+            code, name = row["代號"], row["名稱"]
+            with st.expander(f"{code} {name}（{row['成交金額(萬)']} 萬 / {row['權證檔數']} 檔）"):
+                st.dataframe(
+                    detail_dfs.get(code, pd.DataFrame()),
+                    use_container_width=True, hide_index=True
+                )
 
 # =================================================
 # 🔍 策略掃描
