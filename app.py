@@ -404,29 +404,23 @@ def get_warrant_call_ranking_detail(top_n=30):
 
     try:
         r2 = requests.get(
-            "https://www.twse.com.tw/exchangeReport/STOCK_DAY_ALL?response=json",
+            "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL",
             headers=headers, verify=False, timeout=20
         )
         stock_day_all = r2.json()
     except Exception as e:
         return None, None, f"全市場成交資訊抓取失敗：{e}"
 
-    fields = stock_day_all.get("fields", [])
-    rows = stock_day_all.get("data", [])
-    if "證券代號" not in fields or "成交金額" not in fields or "成交股數" not in fields:
-        return None, None, f"STOCK_DAY_ALL 回傳格式異常,欄位為：{fields}"
-
-    idx_code   = fields.index("證券代號")
-    idx_amount = fields.index("成交金額")
-    idx_vol    = fields.index("成交股數")
+    if not isinstance(stock_day_all, list) or not stock_day_all:
+        return None, None, "STOCK_DAY_ALL 回傳格式異常或為空(可能非交易日)"
 
     turnover_map = {}
     volume_map = {}
-    for row in rows:
+    for row in stock_day_all:
         try:
-            code = row[idx_code].strip()
-            turnover_map[code] = int(str(row[idx_amount]).replace(",", "").strip() or 0)
-            volume_map[code] = int(str(row[idx_vol]).replace(",", "").strip() or 0)
+            code = str(row.get("Code", "")).strip()
+            turnover_map[code] = int(str(row.get("TradeValue", "0")).replace(",", "").strip() or 0)
+            volume_map[code] = int(str(row.get("TradeVolume", "0")).replace(",", "").strip() or 0)
         except Exception:
             continue
 
