@@ -440,21 +440,37 @@ def get_warrant_call_ranking_detail(top_n=30):
 
     ranking = {}
     detail_by_underlying = {}
+    debug = {
+        "權證基本資料筆數": len(warrants),
+        "全市場成交資訊筆數": len(stock_day_all),
+        "類別為認購的權證數": 0,
+        "能解析出標的代號的數量": 0,
+        "有對應到成交金額(>0)的數量": 0,
+    }
+    sample_categories = set()
+    sample_underlying_raw = []
 
     for w in warrants:
         category = (w.get("類別") or "").strip()
+        sample_categories.add(category)
         if "購" not in category:
             continue  # 只統計認購權證
+        debug["類別為認購的權證數"] += 1
 
         warrant_code = (w.get("權證代號") or "").strip()
         warrant_name = (w.get("權證簡稱") or "").strip()
-        u_code, u_name = parse_underlying(w.get("標的證券/指數", ""))
+        underlying_raw = w.get("標的證券/指數", "")
+        if len(sample_underlying_raw) < 5:
+            sample_underlying_raw.append(underlying_raw)
+        u_code, u_name = parse_underlying(underlying_raw)
         if not u_code:
             continue  # 標的是指數(如台指)則略過,只做個股排行
+        debug["能解析出標的代號的數量"] += 1
 
         amount = turnover_map.get(warrant_code, 0)
         if amount <= 0:
             continue
+        debug["有對應到成交金額(>0)的數量"] += 1
 
         volume = volume_map.get(warrant_code, 0)
         expiry_days = days_to_expiry(w.get("履約截止日"))
@@ -473,8 +489,14 @@ def get_warrant_call_ranking_detail(top_n=30):
             "成交金額(萬)": round(amount / 10000, 1),
         })
 
+    debug["出現過的類別值(前幾種)"] = list(sample_categories)[:10]
+    debug["標的欄位原始樣本"] = sample_underlying_raw
+    debug["warrant_code範例"] = [str(w.get("權證代號", "")) for w in warrants[:5]]
+    debug["turnover_map的key範例"] = list(turnover_map.keys())[:5]
+    st.session_state["_warrant_debug"] = debug
+
     if not ranking:
-        return None, None, "目前無資料(可能非交易日或 TWSE 尚未更新)"
+        return None, None, "目前無資料(可能非交易日或 TWSE 尚未更新,詳見下方除錯資訊)"
 
     df_ranking = pd.DataFrame(
         sorted(ranking.values(), key=lambda x: x["成交金額(萬)"], reverse=True)[:top_n]
@@ -1048,6 +1070,10 @@ with tab_warrant:
     df_ranking, detail_dfs, warrant_err = get_warrant_call_ranking_detail()
     if warrant_err:
         st.warning(warrant_err)
+        debug_info = st.session_state.get("_warrant_debug")
+        if debug_info:
+            with st.expander("🔧 除錯資訊(請把這裡的內容截圖給我)", expanded=True):
+                st.json(debug_info)
     else:
         st.dataframe(
             df_ranking[["排名", "代號", "名稱", "成交金額(萬)", "權證檔數"]],
