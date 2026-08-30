@@ -383,8 +383,9 @@ def get_warrant_call_ranking_detail(top_n=30):
     資料來源:
     1. TWSE OpenAPI 上市權證基本資料 (權證代號 <-> 標的股票 對照表)
        https://openapi.twse.com.tw/v1/opendata/t187ap37_L
-    2. TWSE 個股日成交資訊 (全市場當日成交金額/成交量,含權證)
-       https://www.twse.com.tw/exchangeReport/STOCK_DAY_ALL?response=json
+    2. TWSE OpenAPI 上市權證每日交易資訊 (權證代號 <-> 成交張數/成交金額)
+       https://openapi.twse.com.tw/v1/opendata/t187ap42_L
+       (注意:STOCK_DAY_ALL 只涵蓋一般股票,不含權證,故改用此專屬端點)
 
     邏輯:
     - 只統計「認購」類別的權證(視為潛在買盤避險行為的間接推論指標)
@@ -404,23 +405,23 @@ def get_warrant_call_ranking_detail(top_n=30):
 
     try:
         r2 = requests.get(
-            "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL",
+            "https://openapi.twse.com.tw/v1/opendata/t187ap42_L",
             headers=headers, verify=False, timeout=20
         )
-        stock_day_all = r2.json()
+        warrant_trading = r2.json()
     except Exception as e:
-        return None, None, f"全市場成交資訊抓取失敗：{e}"
+        return None, None, f"權證每日交易資訊抓取失敗：{e}"
 
-    if not isinstance(stock_day_all, list) or not stock_day_all:
-        return None, None, "STOCK_DAY_ALL 回傳格式異常或為空(可能非交易日)"
+    if not isinstance(warrant_trading, list) or not warrant_trading:
+        return None, None, "t187ap42_L 回傳格式異常或為空(可能非交易日或當日尚無權證成交)"
 
     turnover_map = {}
-    volume_map = {}
-    for row in stock_day_all:
+    volume_map = {}  # 單位:張(1張=1000權證單位)
+    for row in warrant_trading:
         try:
-            code = str(row.get("Code", "")).strip()
-            turnover_map[code] = int(str(row.get("TradeValue", "0")).replace(",", "").strip() or 0)
-            volume_map[code] = int(str(row.get("TradeVolume", "0")).replace(",", "").strip() or 0)
+            code = str(row.get("權證代號", "")).strip()
+            turnover_map[code] = int(str(row.get("成交金額", "0")).replace(",", "").strip() or 0)
+            volume_map[code] = int(str(row.get("成交張數", "0")).replace(",", "").strip() or 0)
         except Exception:
             continue
 
@@ -451,7 +452,7 @@ def get_warrant_call_ranking_detail(top_n=30):
     detail_by_underlying = {}
     debug = {
         "權證基本資料筆數": len(warrants),
-        "全市場成交資訊筆數": len(stock_day_all),
+        "全市場成交資訊筆數": len(warrant_trading),
         "股票代號對照表筆數": len(name_to_code),
         "類別為認購的權證數": 0,
         "能解析出標的代號的數量": 0,
@@ -495,7 +496,7 @@ def get_warrant_call_ranking_detail(top_n=30):
             "權證名稱": warrant_name,
             "分類": category,
             "到期天數": expiry_days,
-            "成交量(股)": volume,
+            "成交張數": volume,
             "成交金額(萬)": round(amount / 10000, 1),
         })
 
