@@ -401,7 +401,7 @@ def get_warrant_call_ranking_detail(top_n=30):
         )
         warrants = r1.json()
     except Exception as e:
-        return None, None, f"權證基本資料抓取失敗：{e}"
+        return None, None, None, f"權證基本資料抓取失敗：{e}"
 
     try:
         r2 = requests.get(
@@ -410,12 +410,26 @@ def get_warrant_call_ranking_detail(top_n=30):
         )
         warrant_trading = r2.json()
     except Exception as e:
-        return None, None, f"權證每日交易資訊抓取失敗：{e}"
+        return None, None, None, f"權證每日交易資訊抓取失敗：{e}"
 
     if not isinstance(warrant_trading, list) or not warrant_trading:
-        return None, None, "t187ap42_L 回傳格式異常或為空(可能非交易日或當日尚無權證成交)"
+        return None, None, None, "t187ap42_L 回傳格式異常或為空(可能非交易日或當日尚無權證成交)"
 
     _wt_sample = warrant_trading[0] if warrant_trading else {}
+
+    def roc_to_greg_str(roc_str):
+        """民國年 YYYMMDD 轉西元 YYYY-MM-DD 字串,解析失敗回傳原始字串"""
+        s = str(roc_str or "").strip()
+        try:
+            roc_year = int(s[:-4])
+            month_day = s[-4:]
+            greg_year = roc_year + 1911
+            d = pd.to_datetime(f"{greg_year}{month_day}", format="%Y%m%d")
+            return d.strftime("%Y-%m-%d")
+        except Exception:
+            return s
+
+    data_trade_date = roc_to_greg_str(_wt_sample.get("交易日期") or _wt_sample.get("出表日期"))
 
     turnover_map = {}
     volume_map = {}  # 單位:張(1張=1000權證單位)
@@ -519,7 +533,7 @@ def get_warrant_call_ranking_detail(top_n=30):
     st.session_state["_warrant_debug"] = debug
 
     if not ranking:
-        return None, None, "目前無資料(可能非交易日或 TWSE 尚未更新,詳見下方除錯資訊)"
+        return None, None, data_trade_date, "目前無資料(可能非交易日或 TWSE 尚未更新,詳見下方除錯資訊)"
 
     df_ranking = pd.DataFrame(
         sorted(ranking.values(), key=lambda x: x["成交金額(萬)"], reverse=True)[:top_n]
@@ -531,7 +545,7 @@ def get_warrant_call_ranking_detail(top_n=30):
         code: pd.DataFrame(rows_).sort_values("成交金額(萬)", ascending=False)
         for code, rows_ in detail_by_underlying.items()
     }
-    return df_ranking, detail_dfs, None
+    return df_ranking, detail_dfs, data_trade_date, None
 
 
 def get_warrant_last_prices(warrant_codes):
@@ -1133,7 +1147,10 @@ with tab_warrant:
     if st.button("🔄 重新整理排行榜", key="refresh_warrant"):
         get_warrant_call_ranking_detail.clear()
 
-    df_ranking, detail_dfs, warrant_err = get_warrant_call_ranking_detail()
+    df_ranking, detail_dfs, data_trade_date, warrant_err = get_warrant_call_ranking_detail()
+    if data_trade_date:
+        st.caption(f"📅 資料為 TWSE 已公布的最新一筆交易日資料：**{data_trade_date}**"
+                   f"(收盤後 TWSE 通常要等到當天稍晚才會公布,並非收盤後立即更新)")
     if warrant_err:
         st.warning(warrant_err)
         debug_info = st.session_state.get("_warrant_debug")
